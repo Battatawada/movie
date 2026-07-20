@@ -1,0 +1,15 @@
+Analyze this specific competitor recap video in the notebook sources.
+
+Video URL: {video_url}
+
+Use the video's **subtitles/transcript** as ground truth.
+
+Reply with bullet points only (max 8):
+- Opening hook (quote the vibe of first 2–3 caption lines, do not copy verbatim)
+- Narration pace (words per minute feel, pause pattern)
+- How visual beats align with caption blocks
+- Mid-video retention devices (questions, foreshadowing, "but then…")
+- How the ending is delivered in the last 60 seconds of transcript
+- Title/thumbnail promise vs what transcript delivers
+- 2 things to copy for Retro Movie Archive
+- 1 thing to avoid

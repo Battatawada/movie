@@ -1,0 +1,15 @@
+[Unit]
+Description=Retro Movie Archive ffmpeg clip worker
+After=network.target
+
+[Service]
+Type=simple
+User=niche
+WorkingDirectory=/opt/retro-movies/vps
+EnvironmentFile=/opt/retro-movies/.env
+ExecStart=/opt/retro-movies/.venv/bin/python clip_worker.py
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

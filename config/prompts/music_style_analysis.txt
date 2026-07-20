@@ -1,0 +1,11 @@
+Analyze the music reference source in this notebook (YouTube audio).
+
+Describe the background-music bed competitors use — we need a **similar royalty-free substitute**, not a copy.
+
+Reply with bullet points only (max 6):
+- Genre / mood (tense, hopeful, dark ambient, etc.)
+- Tempo BPM feel (slow / mid / driving)
+- Instrumentation (pads, piano, strings, percussion)
+- Dynamics (constant vs builds at twists)
+- Suggested volume under voiceover (~% feel)
+- 2 search keywords for finding a royalty-free replacement track

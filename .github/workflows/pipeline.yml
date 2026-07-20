@@ -1,0 +1,218 @@
+name: Retro Movie Recap Pipeline
+
+on:
+  schedule:
+    - cron: "0 14 * * 3"
+  workflow_dispatch:
+    inputs:
+      movie_slug:
+        description: "Optional movie slug from config/movie_queue.json"
+        required: false
+        type: string
+
+env:
+  VPS_URL: ${{ secrets.VPS_WEBHOOK_URL }}
+  VPS_SECRET: ${{ secrets.VPS_WEBHOOK_SECRET }}
+
+jobs:
+  script-and-audio:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    permissions:
+      contents: write
+      actions: read
+    outputs:
+      run_id: ${{ steps.meta.outputs.run_id }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Restore topic history from latest artifact
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          ARTIFACT_ID=$(gh api "repos/${{ github.repository }}/actions/artifacts?name=topic-history&per_page=5" \
+            --jq '[.artifacts[] | select(.expired==false)][0].id // empty')
+          if [ -z "${ARTIFACT_ID}" ]; then
+            echo "No prior topic-history artifact"
+            exit 0
+          fi
+          gh api "repos/${{ github.repository }}/actions/artifacts/${ARTIFACT_ID}/zip" > /tmp/topic-history.zip
+          unzip -o /tmp/topic-history.zip -d /tmp/topic-history-out
+          if [ -f /tmp/topic-history-out/topic_history.json ]; then
+            cp /tmp/topic-history-out/topic_history.json config/topic_history.json
+          elif [ -f /tmp/topic-history-out/config/topic_history.json ]; then
+            cp /tmp/topic-history-out/config/topic_history.json config/topic_history.json
+          fi
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Verify NotebookLM auth
+        env:
+          NOTEBOOKLM_AUTH_JSON: ${{ secrets.NOTEBOOKLM_AUTH_JSON }}
+          NOTEBOOKLM_PROFILE: retro
+        run: |
+          if [ -z "$NOTEBOOKLM_AUTH_JSON" ]; then
+            echo "NOTEBOOKLM_AUTH_JSON secret is empty"
+            exit 1
+          fi
+          notebooklm auth check --test --json
+
+      - name: Phase 1 — script + scene map
+        env:
+          NOTEBOOKLM_AUTH_JSON: ${{ secrets.NOTEBOOKLM_AUTH_JSON }}
+          NOTEBOOKLM_PROFILE: retro
+        run: |
+          ARGS=(--output output)
+          if [ -n "${{ github.event.inputs.movie_slug }}" ]; then
+            ARGS+=(--movie-slug "${{ github.event.inputs.movie_slug }}")
+          fi
+          python src/phase1_script.py "${ARGS[@]}"
+
+      - name: Build thumbnail (Wikimedia + overlay)
+        run: python src/build_thumbnail.py --input output
+        continue-on-error: true
+
+      - name: Capture run_id
+        id: meta
+        run: |
+          RUN_ID=$(python -c "import json; print(json.load(open('output/metadata.json'))['run_id'])")
+          echo "run_id=$RUN_ID" >> "$GITHUB_OUTPUT"
+
+      - name: Phase 2 — edge-tts
+        run: python src/phase2_audio.py --input output --output output
+
+      - name: Trigger VPS clip render
+        run: python src/trigger_vps.py --input output --run-id "${{ steps.meta.outputs.run_id }}"
+
+      - name: Verify pipeline outputs
+        run: |
+          required=(
+            output/script.txt output/scene_clips.json output/metadata.json
+            output/narration.mp3 output/scene_durations.json output/captions.srt
+            output/youtube_seo.json output/thumbnail.json
+          )
+          for f in "${required[@]}"; do
+            test -s "$f" || { echo "Missing or empty: $f"; exit 1; }
+          done
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mid-pipeline
+          path: output/
+          if-no-files-found: error
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: topic-history
+          path: config/topic_history.json
+          if-no-files-found: warn
+
+      - name: Persist topic history to main
+        if: success()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add config/topic_history.json
+          if git diff --staged --quiet; then exit 0; fi
+          git commit -m "chore: update topic history after ${{ steps.meta.outputs.run_id }}"
+          git pull --rebase origin HEAD || true
+          git push origin HEAD:${{ github.ref_name }}
+
+  wait-for-render:
+    needs: script-and-audio
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: mid-pipeline
+          path: output
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - run: pip install httpx
+
+      - name: Poll VPS until render complete
+        run: python src/poll_vps.py --run-id "${{ needs.script-and-audio.outputs.run_id }}" --timeout 7200
+
+      - name: Download final video from VPS
+        run: python src/download_vps_output.py --run-id "${{ needs.script-and-audio.outputs.run_id }}" --output output
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: final-video
+          path: |
+            output/final_video.mp4
+            output/thumbnail.png
+            output/captions.srt
+            output/metadata.json
+            output/youtube_seo.json
+            output/script.txt
+          if-no-files-found: error
+
+  upload:
+    needs: [script-and-audio, wait-for-render]
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: final-video
+          path: output
+
+      - run: pip install -r requirements.txt
+
+      - name: Phase 5 — YouTube upload
+        env:
+          YOUTUBE_CLIENT_ID: ${{ secrets.YOUTUBE_CLIENT_ID }}
+          YOUTUBE_CLIENT_SECRET: ${{ secrets.YOUTUBE_CLIENT_SECRET }}
+          YOUTUBE_REFRESH_TOKEN: ${{ secrets.YOUTUBE_REFRESH_TOKEN }}
+        run: |
+          if [ -z "$YOUTUBE_CLIENT_ID" ] || [ -z "$YOUTUBE_REFRESH_TOKEN" ]; then
+            echo "YouTube secrets not set — video saved as artifact only."
+            exit 0
+          fi
+          test -s output/final_video.mp4 || exit 1
+          test -s output/thumbnail.png || exit 1
+          python src/phase5_upload.py \
+            --video output/final_video.mp4 \
+            --metadata output/metadata.json \
+            --seo output/youtube_seo.json \
+            --captions output/captions.srt \
+            --thumbnail output/thumbnail.png
+
+      - name: Alert on success
+        if: success()
+        env:
+          ALERT_WEBHOOK_URL: ${{ secrets.ALERT_WEBHOOK_URL }}
+        run: bash scripts/alert.sh "Retro recap complete — run ${{ needs.script-and-audio.outputs.run_id }}"
+
+  notify-failure:
+    needs: [script-and-audio, wait-for-render, upload]
+    if: ${{ always() && (needs.script-and-audio.result == 'failure' || needs.wait-for-render.result == 'failure' || needs.upload.result == 'failure') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Alert on failure
+        env:
+          ALERT_WEBHOOK_URL: ${{ secrets.ALERT_WEBHOOK_URL }}
+        run: bash scripts/alert.sh "Retro recap pipeline FAILED"

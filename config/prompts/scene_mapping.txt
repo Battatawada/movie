@@ -1,0 +1,32 @@
+You are building a scene map for an automated movie recap video.
+
+The recap narration is split into {scene_count} scenes (one voiceover beat each).
+The subtitle transcript uses line numbers like: INDEX|TIMESTAMP|TEXT
+
+For EACH scene, pick which subtitle lines best match the VISUAL moment being described in the narration.
+Use the subtitle index numbers (left column), not timestamps.
+
+Narration scenes:
+{narration_scenes}
+
+Subtitle index (sample — full transcript is in the notebook):
+{subtitle_index_sample}
+
+Reply with ONLY valid JSON (no markdown):
+{{
+  "scenes": [
+    {{
+      "scene_id": 1,
+      "subtitle_start": 1,
+      "subtitle_end": 8,
+      "reason": "brief note"
+    }}
+  ]
+}}
+
+Rules:
+- Exactly {scene_count} scenes, scene_id 1..{scene_count}
+- subtitle_start and subtitle_end are inclusive 1-based line numbers from the SRT index
+- Each range should cover 3–40 subtitle lines; prefer the visual beat, not the whole film
+- Ranges must not overlap heavily; move forward through the film
+- Clip source will be at most {max_clip_sec} seconds — pick tight visual moments

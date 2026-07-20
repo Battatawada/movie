@@ -1,0 +1,15 @@
+---
+description: Retro Movie Archive — movie recap pipeline context
+globs:
+  - "**/*"
+alwaysApply: true
+---
+
+# Retro Movie Archive
+
+Read `context.md` at session start (local, gitignored).
+
+- **Plan A:** real film clips from SRT timestamps — no FlowKit / no AI images
+- **GHA:** Phase 1–2 + upload; **VPS :8766** does ffmpeg clip render
+- **Movies:** `/opt/movies/{slug}/movie.mp4` + `subtitles.srt`
+- **SRT is ground truth** for clip times; NotebookLM only picks line ranges + writes script

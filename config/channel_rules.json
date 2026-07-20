@@ -1,0 +1,41 @@
+{
+  "channel_name": "Retro Movie Archive",
+  "shorts": {
+    "max_per_day": 0,
+    "optimal_times": []
+  },
+  "long_form": {
+    "max_per_day": 1,
+    "optimal_times": ["18:00"]
+  },
+  "scheduling": {
+    "min_gap_hours": 36,
+    "avoid_hours": [0, 1, 2, 3, 4, 5]
+  },
+  "seo": {
+    "niche": "movie recap film summary ending explained classic movies",
+    "default_tags": [
+      "retro movie archive",
+      "movie recap",
+      "film recap",
+      "movie summary",
+      "ending explained",
+      "full movie recap",
+      "classic movies",
+      "plot recap"
+    ],
+    "title_max_chars": 65,
+    "region": "US",
+    "description_footer": "About Retro Movie Archive\nClassic films. Condensed. Narrated.\n\nSubscribe for weekly movie recaps.\nhttps://www.youtube.com/@retromoviearchive\n\n#movierecap #retromoviearchive #filmrecap"
+  },
+  "upload": {
+    "privacy": "public",
+    "category_id": "1",
+    "made_for_kids": false,
+    "self_declared_made_for_kids": false,
+    "embeddable": true,
+    "license": "youtube",
+    "public_stats_viewable": true,
+    "contains_synthetic_media": true
+  }
+}

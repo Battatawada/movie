@@ -1,0 +1,14 @@
+You are planning the next movie recap video for Retro Movie Archive.
+
+Already recapped (HARD BAN — do not repeat these films or franchises):
+{past_topics}
+
+List exactly 10 movies NOT in the ban list. Each line must be:
+Title (Year) — one-line hook
+
+Rules:
+- Classic, cult, or widely known films (1980–2010 preferred for "retro" brand)
+- Mix genres: thriller, sci-fi, horror, drama, action
+- No duplicates of banned titles or same franchise (e.g. if "The Matrix" is banned, also ban "Matrix Reloaded")
+- Public-domain or well-known studio films only
+- Output numbered 1–10 only, no preamble

@@ -1,0 +1,43 @@
+{
+  "duration_minutes": 12,
+  "duration_minutes_max": 15,
+  "continue_keyword": "Next",
+  "words_per_minute": 145,
+  "max_scenes": 50,
+  "min_scenes": 12,
+  "words_per_scene": 35,
+  "min_words_per_scene": 12,
+  "generate_thumbnail": true,
+  "ingest_style_channels": true,
+  "max_style_sources": 12,
+  "style_source_wait_timeout": 1200,
+  "source_request_timeout": 180,
+  "source_wait_timeout": 900,
+  "source_add_delay_sec": 5,
+  "clip_pad_start_sec": 0.0,
+  "clip_pad_end_sec": 0.3,
+  "max_clip_source_sec": 8.0,
+  "tts_voices": ["en-US-ChristopherNeural"],
+  "tts_rate": "-3%",
+  "letterbox_color": "0x000000",
+  "captions": {
+    "burn_into_video": false,
+    "upload_youtube_srt": true,
+    "generate_word_timings": false
+  },
+  "vps_movies_dir": "/opt/movies",
+  "bg_music": {
+    "enabled": true,
+    "track": "config/bg_music/ambient_cinematic.mp3",
+    "volume": 0.12,
+    "fade_in_sec": 2.0,
+    "fade_out_sec": 3.0,
+    "duck_under_voice": false
+  },
+  "end_card": {
+    "enabled": true,
+    "image": "config/end_card/subscribe.png",
+    "script": "If you want more classic films broken down the same way, subscribe to Retro Movie Archive. Thanks for watching.",
+    "voice": "en-US-ChristopherNeural"
+  }
+}

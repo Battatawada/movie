@@ -1,0 +1,8 @@
+From the numbered list below, pick exactly ONE movie for the next recap video.
+
+Banned (already done): see conversation history / past topics.
+
+List:
+{topics_list}
+
+Reply with ONLY the chosen line (Title (Year) — hook). No explanation.

@@ -1,0 +1,62 @@
+# Re-upload a finished render without re-running the full pipeline.
+# Needed when "Re-run failed jobs" still uses the old commit (no ffmpeg, etc.).
+name: Upload only
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_run_id:
+        description: "GitHub Actions run ID that has the final-video artifact"
+        required: true
+        type: string
+
+jobs:
+  upload:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Install ffmpeg (ffprobe for duration check)
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+
+      - name: Download final-video from source run
+        uses: actions/download-artifact@v4
+        with:
+          name: final-video
+          path: output
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          run-id: ${{ inputs.source_run_id }}
+
+      - name: Install Python deps for upload
+        run: pip install -r requirements.txt
+
+      - name: Phase 5 — YouTube upload
+        env:
+          YOUTUBE_CLIENT_ID: ${{ secrets.YOUTUBE_CLIENT_ID }}
+          YOUTUBE_CLIENT_SECRET: ${{ secrets.YOUTUBE_CLIENT_SECRET }}
+          YOUTUBE_REFRESH_TOKEN: ${{ secrets.YOUTUBE_REFRESH_TOKEN }}
+        run: |
+          if [ -z "$YOUTUBE_CLIENT_ID" ] || [ -z "$YOUTUBE_REFRESH_TOKEN" ]; then
+            echo "YouTube secrets not set — cannot upload."
+            exit 1
+          fi
+          test -s output/final_video.mp4 || { echo "Missing final_video.mp4"; exit 1; }
+          test -s output/thumbnail.png || { echo "Missing thumbnail.png"; exit 1; }
+          test -s output/youtube_seo.json || { echo "Missing youtube_seo.json"; exit 1; }
+          python src/phase5_upload.py \
+            --video output/final_video.mp4 \
+            --metadata output/metadata.json \
+            --seo output/youtube_seo.json \
+            --captions output/captions.srt \
+            --thumbnail output/thumbnail.png
+
+      - name: Alert on success
+        if: success()
+        env:
+          ALERT_WEBHOOK_URL: ${{ secrets.ALERT_WEBHOOK_URL }}
+        run: bash scripts/alert.sh "Upload-only complete — source run ${{ inputs.source_run_id }}"

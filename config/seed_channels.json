@@ -1,0 +1,39 @@
+{
+  "channels": [
+    {
+      "name": "Movie Recaps",
+      "url": "https://www.youtube.com/@movierecapsofficial",
+      "notes": "Primary pacing + structure reference"
+    },
+    {
+      "name": "Haunting Tube",
+      "url": "https://www.youtube.com/@HauntingTube",
+      "notes": "Tone + retention hooks"
+    },
+    {
+      "name": "Mystery Recapped",
+      "url": "https://www.youtube.com/@mysteryrecappedofficial",
+      "notes": "SEO titles + thumbnail energy"
+    }
+  ],
+  "sample_videos": [
+    {
+      "url": "https://www.youtube.com/watch?v=5ekfnZBxbJw",
+      "notes": "Reference recap — analyze narration + subtitles"
+    },
+    {
+      "url": "https://www.youtube.com/watch?v=ZD8J5FBbYIE",
+      "notes": "Reference recap — analyze narration + subtitles"
+    },
+    {
+      "url": "https://www.youtube.com/watch?v=W5ESi5qDxCY",
+      "notes": "Reference recap — analyze narration + subtitles"
+    }
+  ],
+  "music_references": [
+    {
+      "url": "https://www.youtube.com/watch?v=CDWtH8eHeEU",
+      "notes": "Background music vibe reference — tempo, mood, instrumentation (do not rip audio)"
+    }
+  ]
+}

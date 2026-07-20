@@ -1,0 +1,27 @@
+Design ONE YouTube thumbnail for this movie recap.
+
+Movie: {topic}
+Video title: {title}
+
+STYLE BRIEF (match competitor thumbnail patterns):
+{style_notes}
+
+We will fetch a real photo from Wikimedia Commons (not AI). Your job: specify search + overlay.
+
+Reply with ONLY raw JSON:
+{{
+  "image_search_query": "Wikipedia/Wikimedia search: film title + year OR lead actor + film name (e.g. 'Inception 2010 film' or 'Leonardo DiCaprio Inception')",
+  "fallback_search_query": "second search if first fails",
+  "overlay_title": "2–4 words MAX on thumbnail (movie shorthand)",
+  "overlay_subtitle": "RECAP or EXPLAINED or ENDING",
+  "text_color": "#FFFFFF",
+  "accent_color": "#FFD700",
+  "style_notes": "e.g. dark gradient bottom third, bold sans-serif, slight stroke"
+}}
+
+Rules:
+- High contrast, readable on mobile
+- One hero face or iconic still — not a 6-panel collage
+- No studio logos, no rating badges
+- Text must fit in 1280×720 with large font
+- Curiosity without lying (no fake red arrows on things that never happen)
