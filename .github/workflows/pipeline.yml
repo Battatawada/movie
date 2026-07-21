@@ -53,6 +53,24 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
+      - name: Verify VPS reachable
+        run: |
+          python - <<'PY'
+          import os, sys
+          import httpx
+          base = os.environ.get("VPS_URL", "").rstrip("/")
+          if not base:
+              sys.exit("VPS_URL secret is empty")
+          try:
+              r = httpx.get(f"{base}/health", timeout=30.0)
+              r.raise_for_status()
+          except Exception as exc:
+              print(f"VPS health check failed for {base}/health: {exc}")
+              print("If SSH localhost works, run: sudo bash /opt/retro-movies/scripts/vps-open-firewall-port.sh 8766")
+              raise
+          print(r.json())
+          PY
+
       - name: Verify NotebookLM auth
         env:
           NOTEBOOKLM_AUTH_JSON: ${{ secrets.NOTEBOOKLM_AUTH_JSON }}

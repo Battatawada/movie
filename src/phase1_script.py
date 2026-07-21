@@ -42,6 +42,7 @@ from common import (
     load_topic_history,
     new_run_id,
     notebooklm_json_with_retry,
+    notebooklm_source_add,
     parse_numbered_topics,
     parse_hook_package_json,
     parse_seo_json,
@@ -371,6 +372,10 @@ def _ingest_style_sources(notebook_id: str, pipeline: dict[str, Any]) -> str:
     if not pipeline.get("ingest_style_channels", True):
         return _default_style_notes()
 
+    if not pipeline.get("ingest_youtube_style_sources", False):
+        print("  Style from channel_playbook.md (YouTube refs disabled for CI reliability)", flush=True)
+        return _default_style_notes()
+
     channels, videos, music_urls = _collect_style_source_urls()
     all_urls = list(dict.fromkeys(channels + videos + music_urls))
     if not all_urls:
@@ -381,16 +386,27 @@ def _ingest_style_sources(notebook_id: str, pipeline: dict[str, Any]) -> str:
     delay = float(pipeline.get("source_add_delay_sec", 5))
     timeout = int(pipeline.get("source_request_timeout", 180))
     max_sources = int(pipeline.get("max_style_sources", 12))
+    reconcile_timeout = float(pipeline.get("source_reconcile_timeout", 90))
 
     for i, url in enumerate(all_urls[:max_sources]):
         if i:
             time.sleep(delay)
         label = "channel" if url in channels else ("music" if url in music_urls else "video")
         print(f"  Adding style source ({label}) {i + 1}/{min(len(all_urls), max_sources)}...", flush=True)
-        added = notebooklm_json_with_retry(
-            "source", "add", url, "--notebook", notebook_id, "--request-timeout", str(timeout),
-        )
-        source_ids.append(extract_source_id(added))
+        try:
+            added = notebooklm_source_add(
+                notebook_id,
+                url,
+                request_timeout=timeout,
+                reconcile_timeout=reconcile_timeout,
+            )
+            source_ids.append(extract_source_id(added))
+        except RuntimeError as exc:
+            print(f"  WARN: skipped style source ({label}): {exc}", flush=True)
+
+    if not source_ids:
+        print("  No style sources landed — falling back to channel_playbook.md", flush=True)
+        return _default_style_notes()
 
     if source_ids:
         wait_sources(
@@ -508,10 +524,11 @@ def main() -> None:
         srt_tmp = out / "_srt_upload.txt"
         srt_tmp.write_text(srt_text, encoding="utf-8")
         print("  Adding SRT as NotebookLM source...", flush=True)
-        added = notebooklm_json_with_retry(
-            "source", "add", str(srt_tmp.resolve()),
-            "--notebook", notebook_id,
-            "--request-timeout", str(pipeline.get("source_request_timeout", 180)),
+        added = notebooklm_source_add(
+            notebook_id,
+            str(srt_tmp.resolve()),
+            request_timeout=int(pipeline.get("source_request_timeout", 180)),
+            reconcile_timeout=float(pipeline.get("source_reconcile_timeout", 90)),
         )
         srt_tmp.unlink(missing_ok=True)
         wait_sources(notebook_id, [extract_source_id(added)], timeout=int(pipeline.get("source_wait_timeout", 900)))

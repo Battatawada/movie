@@ -42,3 +42,11 @@ sudo chown -R niche:niche /opt/movies
 ```bash
 curl http://140.245.245.123:8766/health
 ```
+
+From your machine (not just SSH localhost). If this times out but `curl http://127.0.0.1:8766/health` works on the VPS, open the Oracle iptables port:
+
+```bash
+sudo bash /opt/retro-movies/scripts/vps-open-firewall-port.sh 8766
+```
+
+`vps-install-service.sh` runs this automatically on deploy.

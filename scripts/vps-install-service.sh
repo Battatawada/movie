@@ -34,6 +34,8 @@ EOF
 chown "$APP_USER:$APP_USER" "$APP_ROOT/.env"
 chmod 600 "$APP_ROOT/.env"
 
+bash "$APP_ROOT/scripts/vps-open-firewall-port.sh" "$APP_PORT"
+
 cp "$APP_ROOT/deploy/retro-clip-worker.service" /etc/systemd/system/
 systemctl daemon-reload
 systemctl enable retro-clip-worker

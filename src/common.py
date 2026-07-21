@@ -159,8 +159,15 @@ def is_transient_notebooklm_error(message: str) -> bool:
             "connection reset",
             "temporarily unavailable",
             "rate limit",
+            "rate_limited",
         )
     )
+
+
+def is_reconcilable_notebooklm_rpc_error(message: str) -> bool:
+    """NotebookLM sometimes returns rpc 3/9 while the source lands asynchronously."""
+    lower = message.lower()
+    return any(token in lower for token in ("rpc_code=9", "rpc_code=3", "rpc error: [9]", "rpc error: [3]"))
 
 
 def run_cmd(args: list[str], *, env: dict[str, str] | None = None, check: bool = True) -> subprocess.CompletedProcess[str]:
@@ -175,8 +182,17 @@ def run_cmd(args: list[str], *, env: dict[str, str] | None = None, check: bool =
         cwd=ROOT,
     )
     if check and result.returncode != 0:
-        sys.stderr.write(result.stderr or result.stdout or "")
-        raise RuntimeError(f"Command failed ({result.returncode}): {' '.join(args)}")
+        err_text = result.stderr or result.stdout or ""
+        sys.stderr.write(err_text)
+        message = f"Command failed ({result.returncode}): {' '.join(args)}"
+        if "--json" in args and result.stdout.strip().startswith("{"):
+            try:
+                payload = json.loads(result.stdout)
+                if isinstance(payload, dict) and payload.get("message"):
+                    message = str(payload["message"])
+            except json.JSONDecodeError:
+                pass
+        raise RuntimeError(message)
     return result
 
 
@@ -256,6 +272,95 @@ def notebooklm_json_with_retry(*args: str, retries: int = 4) -> dict[str, Any]:
                 continue
             raise
     raise RuntimeError(last_err)
+
+
+def notebooklm_list_sources(notebook_id: str) -> list[dict[str, Any]]:
+    data = notebooklm_json("source", "list", "--notebook", notebook_id)
+    sources = data.get("sources")
+    return list(sources) if isinstance(sources, list) else []
+
+
+def _youtube_video_id(url: str) -> str | None:
+    match = re.search(r"(?:v=|youtu\.be/)([A-Za-z0-9_-]{11})", url)
+    return match.group(1) if match else None
+
+
+def _source_matches_content(source: dict[str, Any], content: str) -> bool:
+    src_url = str(source.get("url") or "")
+    if content.startswith(("http://", "https://")):
+        if content in src_url or src_url in content:
+            return True
+        video_id = _youtube_video_id(content)
+        return bool(video_id and video_id in src_url)
+    title = str(source.get("title") or "")
+    path = Path(content)
+    if path.exists():
+        return path.name.lower() in title.lower() or path.stem.lower() in title.lower()
+    return False
+
+
+def reconcile_source_add(
+    notebook_id: str,
+    content: str,
+    *,
+    before_ids: set[str],
+    timeout: float = 90.0,
+) -> dict[str, Any] | None:
+    """Poll source list after rpc 3/9 to see whether NotebookLM accepted the add."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        for src in notebooklm_list_sources(notebook_id):
+            sid = str(src.get("id") or "")
+            if not sid or sid in before_ids:
+                continue
+            if _source_matches_content(src, content):
+                return {
+                    "source": {
+                        "id": sid,
+                        "title": src.get("title"),
+                        "url": src.get("url"),
+                    }
+                }
+        time.sleep(5)
+    return None
+
+
+def notebooklm_source_add(
+    notebook_id: str,
+    content: str,
+    *,
+    request_timeout: int = 180,
+    reconcile_timeout: float = 90.0,
+) -> dict[str, Any]:
+    """Add a NotebookLM source and reconcile false-negative rpc 3/9 failures."""
+    before_ids = {str(src.get("id")) for src in notebooklm_list_sources(notebook_id) if src.get("id")}
+    args = (
+        "source",
+        "add",
+        content,
+        "--notebook",
+        notebook_id,
+        "--request-timeout",
+        str(request_timeout),
+    )
+    try:
+        return notebooklm_json_with_retry(*args)
+    except RuntimeError as exc:
+        err = str(exc)
+        if not is_reconcilable_notebooklm_rpc_error(err):
+            raise
+        print("  source add rpc error — checking whether source landed...", flush=True)
+        reconciled = reconcile_source_add(
+            notebook_id,
+            content,
+            before_ids=before_ids,
+            timeout=reconcile_timeout,
+        )
+        if reconciled:
+            sid = reconciled["source"]["id"]
+            print(f"  source landed after rpc error ({sid[:8]}...)", flush=True)
+            return reconciled
+        raise
 
 
 def is_transient_http_status(status_code: int) -> bool:
