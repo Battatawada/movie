@@ -368,6 +368,87 @@ def notebooklm_source_add(
         raise
 
 
+MAX_NOTEBOOKLM_ASK_CHARS = 5500
+
+
+def condensed_style_notes(full_notes: str = "", *, max_chars: int = 1200) -> str:
+    """Short inline style brief — full playbook lives as a notebook source."""
+    lines = [ln.strip() for ln in full_notes.splitlines() if ln.strip().startswith("-")]
+    if lines:
+        return "\n".join(lines[:10])[:max_chars]
+    return (
+        "Warm documentary recap; calm male narrator; spoiler-forward full plot.\n"
+        "- Hook in first 30s: mid-scene crisis, not 'welcome back'\n"
+        "- Title: film name + year + Recap/Explained\n"
+        "- Thumbnail: 2-4 words ALL CAPS + RECAP/EXPLAINED chip\n"
+        "- 12-15 min; muted real clips + VO; subtle ambient bed\n"
+        "- See channel playbook source for full competitor patterns"
+    )[:max_chars]
+
+
+def _notebooklm_ask_retryable(exc: Exception) -> bool:
+    msg = str(exc).lower()
+    if any(s in msg for s in ("too large", "too long", "shorten it", "size limit", "status 3")):
+        return False
+    try:
+        from notebooklm.exceptions import ChatResponseParseError, NetworkError, RateLimitError
+
+        if isinstance(exc, (NetworkError, RateLimitError, ChatResponseParseError)):
+            return True
+    except ImportError:
+        pass
+    return is_transient_notebooklm_error(msg)
+
+
+def notebooklm_ask(
+    notebook_id: str,
+    prompt: str,
+    *,
+    new: bool = False,
+    source_ids: list[str] | None = None,
+    request_timeout: int = 300,
+    retries: int = 6,
+) -> str:
+    """Ask NotebookLM via the Python API (0.8+), not the CLI subprocess."""
+    import asyncio
+
+    from notebooklm import NotebookLMClient
+    from notebooklm.exceptions import NotebookLMError
+
+    if len(prompt) > MAX_NOTEBOOKLM_ASK_CHARS:
+        raise RuntimeError(
+            f"NotebookLM prompt too long ({len(prompt)} chars > {MAX_NOTEBOOKLM_ASK_CHARS}). "
+            "Move reference material into notebook sources instead of inlining it."
+        )
+
+    async def _once() -> str:
+        async with NotebookLMClient.from_storage(chat_timeout=float(request_timeout)) as client:
+            if new:
+                conv_id = await client.chat.get_conversation_id(notebook_id)
+                if conv_id:
+                    await client.chat.delete_conversation(notebook_id, conv_id)
+            result = await client.chat.ask(
+                notebook_id,
+                prompt,
+                source_ids=source_ids or None,
+            )
+            return (result.answer or "").strip()
+
+    last_err = ""
+    for attempt in range(retries):
+        try:
+            return asyncio.run(_once())
+        except NotebookLMError as exc:
+            last_err = str(exc)
+            if attempt + 1 < retries and _notebooklm_ask_retryable(exc):
+                wait = 20 * (attempt + 1)
+                print(f"  notebooklm ask retry {attempt + 2}/{retries} in {wait}s...", flush=True)
+                time.sleep(wait)
+                continue
+            raise RuntimeError(last_err) from exc
+    raise RuntimeError(last_err)
+
+
 def is_transient_http_status(status_code: int) -> bool:
     return status_code in {408, 429, 500, 502, 503, 504}
 

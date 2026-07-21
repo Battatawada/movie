@@ -17,7 +17,6 @@ import json
 import os
 import re
 import sys
-import tempfile
 import time
 from pathlib import Path
 from typing import Any
@@ -29,6 +28,7 @@ from common import (
     append_topic_history,
     clean_script_for_tts,
     clips_to_scenes,
+    condensed_style_notes,
     estimate_scene_count,
     extract_json_blocks,
     extract_notebook_id,
@@ -41,6 +41,7 @@ from common import (
     load_prompt,
     load_topic_history,
     new_run_id,
+    notebooklm_ask,
     notebooklm_json_with_retry,
     notebooklm_source_add,
     parse_numbered_topics,
@@ -87,92 +88,42 @@ def wait_sources(
             raise RuntimeError(f"Source {sid} failed: {last_err}")
 
 
-def _parse_ask_response(raw_stdout: str) -> str:
-    text = raw_stdout.strip()
-    if text.startswith("{"):
-        try:
-            data = json.loads(text)
-            answer = data.get("answer") or data.get("text") or ""
-            if isinstance(answer, str) and answer.strip():
-                return answer.strip()
-        except json.JSONDecodeError:
-            pass
-    return text
-
-
-def _ask_cmd(
-    notebook_id: str,
-    prompt: str,
-    *,
-    prompt_file: Path | None,
-    new: bool,
-    request_timeout: int,
-    source_ids: list[str] | None,
-) -> list[str]:
-    cmd = [
-        "notebooklm", "ask",
-        *(["--prompt-file", str(prompt_file)] if prompt_file else [prompt]),
-        "--notebook", notebook_id,
-        "--request-timeout", str(request_timeout),
-        "--json",
-    ]
-    if new:
-        cmd.extend(["--new", "--yes"])
-    for sid in source_ids or []:
-        cmd.extend(["-s", sid])
-    return cmd
-
-
 def ask(
     notebook_id: str,
     prompt: str,
     *,
     new: bool = False,
     retries: int = 6,
-    request_timeout: int = 180,
+    request_timeout: int = 300,
     source_ids: list[str] | None = None,
 ) -> str:
-    import subprocess
+    return notebooklm_ask(
+        notebook_id,
+        prompt,
+        new=new,
+        source_ids=source_ids,
+        request_timeout=request_timeout,
+        retries=retries,
+    )
 
-    prompt_file: Path | None = None
-    if len(prompt) > 6000:
-        tmp = tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False, encoding="utf-8")
-        tmp.write(prompt)
-        tmp.close()
-        prompt_file = Path(tmp.name)
 
-    last_err = ""
-    for attempt in range(retries):
-        cmd = _ask_cmd(
-            notebook_id,
-            prompt,
-            prompt_file=prompt_file,
-            new=new,
-            request_timeout=request_timeout,
-            source_ids=source_ids,
-        )
-        result = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8")
-        if result.returncode == 0:
-            if prompt_file:
-                prompt_file.unlink(missing_ok=True)
-            return _parse_ask_response(result.stdout)
-        last_err = (result.stderr or result.stdout or "ask failed").strip()
-        if attempt + 1 < retries and is_transient_notebooklm_error(last_err):
-            wait = 20 * (attempt + 1)
-            print(f"  notebooklm ask retry {attempt + 2}/{retries} in {wait}s...", flush=True)
-            time.sleep(wait)
-            if len(prompt) > 6000 and (prompt_file is None or not prompt_file.exists()):
-                tmp = tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False, encoding="utf-8")
-                tmp.write(prompt)
-                tmp.close()
-                prompt_file = Path(tmp.name)
-            continue
-        if prompt_file:
-            prompt_file.unlink(missing_ok=True)
-        raise RuntimeError(last_err)
-    if prompt_file:
-        prompt_file.unlink(missing_ok=True)
-    raise RuntimeError(last_err)
+def _attach_playbook_source(notebook_id: str, pipeline: dict[str, Any]) -> str | None:
+    """Add channel_playbook.md as a notebook source so prompts stay short."""
+    if pipeline.get("ingest_youtube_style_sources", False):
+        return None
+    playbook = CONFIG / "channel_playbook.md"
+    if not playbook.exists():
+        return None
+    print("  Adding channel_playbook.md to notebook...", flush=True)
+    added = notebooklm_source_add(
+        notebook_id,
+        str(playbook.resolve()),
+        request_timeout=int(pipeline.get("source_request_timeout", 180)),
+        reconcile_timeout=float(pipeline.get("source_reconcile_timeout", 90)),
+    )
+    source_id = extract_source_id(added)
+    wait_sources(notebook_id, [source_id], timeout=int(pipeline.get("source_wait_timeout", 900)))
+    return source_id
 
 
 def collect_multipart_text(
@@ -285,17 +236,36 @@ def build_scene_mapping_prompt(
     blocks: list[SubtitleBlock],
     pipeline: dict[str, Any],
 ) -> str:
+    seg_chars = int(pipeline.get("scene_map_segment_chars", 80))
+    index_blocks = int(pipeline.get("scene_map_index_blocks", 40))
     scene_lines = "\n".join(
-        f"Scene {i + 1}: {seg[:220]}{'...' if len(seg) > 220 else ''}"
+        f"Scene {i + 1}: {seg[:seg_chars]}{'...' if len(seg) > seg_chars else ''}"
         for i, seg in enumerate(segments)
     )
-    return (
+    prompt = (
         load_prompt("scene_mapping.txt")
         .replace("{scene_count}", str(len(segments)))
         .replace("{narration_scenes}", scene_lines)
-        .replace("{subtitle_index_sample}", srt_to_llm_index(blocks[:200]))
+        .replace("{subtitle_index_sample}", srt_to_llm_index(blocks[:index_blocks]))
         .replace("{max_clip_sec}", str(pipeline.get("max_clip_source_sec", 8.0)))
     )
+    from common import MAX_NOTEBOOKLM_ASK_CHARS
+
+    while len(prompt) > MAX_NOTEBOOKLM_ASK_CHARS and seg_chars > 30:
+        seg_chars -= 10
+        index_blocks = max(20, index_blocks - 5)
+        scene_lines = "\n".join(
+            f"Scene {i + 1}: {seg[:seg_chars]}{'...' if len(seg) > seg_chars else ''}"
+            for i, seg in enumerate(segments)
+        )
+        prompt = (
+            load_prompt("scene_mapping.txt")
+            .replace("{scene_count}", str(len(segments)))
+            .replace("{narration_scenes}", scene_lines)
+            .replace("{subtitle_index_sample}", srt_to_llm_index(blocks[:index_blocks]))
+            .replace("{max_clip_sec}", str(pipeline.get("max_clip_source_sec", 8.0)))
+        )
+    return prompt
 
 
 def parse_scene_mapping(raw: str, scene_count: int) -> list[dict[str, Any]]:
@@ -569,6 +539,11 @@ def main() -> None:
 
         style_notes = _ingest_style_sources(notebook_id, pipeline)
         (out / "style_notes.txt").write_text(style_notes, encoding="utf-8")
+        style_for_prompt = condensed_style_notes(style_notes)
+        playbook_source_id = _attach_playbook_source(notebook_id, pipeline)
+        chat_source_ids = [srt_source_id]
+        if playbook_source_id:
+            chat_source_ids.append(playbook_source_id)
 
         pre_chat_delay = float(pipeline.get("pre_chat_delay_sec", 15))
         if pre_chat_delay > 0:
@@ -576,7 +551,6 @@ def main() -> None:
             time.sleep(pre_chat_delay)
 
         movie_title = topic.split("—")[0].strip() if "—" in topic else topic
-        style_for_prompt = style_notes[:4000]
 
         print("[Hook] Title + cold open + thumbnail package...", flush=True)
         hook_prompt = (
@@ -585,22 +559,13 @@ def main() -> None:
             .replace("{duration_minutes}", str(duration))
             .replace("{style_notes}", style_for_prompt)
         )
-        try:
-            hook_raw = ask(
-                notebook_id,
-                hook_prompt,
-                new=True,
-                request_timeout=300,
-                source_ids=[srt_source_id],
-            )
-        except RuntimeError as exc:
-            print(f"  WARN: hook ask failed after retries — using fallback package ({exc})", flush=True)
-            hook_raw = json.dumps({
-                "title": sanitize_seo_title(f"{movie_title} — Full Movie Recap"),
-                "cold_open": "",
-                "thumbnail_text": (movie_title.split("(")[0].strip()[:20] or "FULL RECAP").upper(),
-                "overlay_subtitle": "RECAP",
-            })
+        hook_raw = ask(
+            notebook_id,
+            hook_prompt,
+            new=True,
+            request_timeout=300,
+            source_ids=chat_source_ids,
+        )
         (out / "hook_package_raw.txt").write_text(hook_raw, encoding="utf-8")
         try:
             hook_pkg = parse_hook_package_json(hook_raw)
@@ -632,7 +597,7 @@ def main() -> None:
             story_prompt,
             continue_word,
             new=True,
-            source_ids=[srt_source_id],
+            source_ids=chat_source_ids,
         )
         script = clean_script_for_tts(script)
         word_count = len(script.split())
@@ -649,7 +614,7 @@ def main() -> None:
             map_prompt,
             new=True,
             request_timeout=300,
-            source_ids=[srt_source_id],
+            source_ids=chat_source_ids,
         )
         (out / "scene_mapping_raw.txt").write_text(map_raw, encoding="utf-8")
         try:
@@ -662,7 +627,7 @@ def main() -> None:
                 retry,
                 new=True,
                 request_timeout=300,
-                source_ids=[srt_source_id],
+                source_ids=chat_source_ids,
             )
             mapping = parse_scene_mapping(map_raw, scene_count)
 
@@ -676,9 +641,9 @@ def main() -> None:
             .replace("{topic}", topic)
             .replace("{locked_title}", locked_title)
             .replace("{past_topics}", past_topics)
-            .replace("{style_notes}", style_notes)
+            .replace("{style_notes}", style_for_prompt)
         )
-        seo_raw = ask(notebook_id, seo_prompt, new=True)
+        seo_raw = ask(notebook_id, seo_prompt, new=True, source_ids=chat_source_ids)
         try:
             seo = parse_seo_json(seo_raw)
         except ValueError:
@@ -694,9 +659,9 @@ def main() -> None:
                 .replace("{topic}", topic)
                 .replace("{title}", locked_title)
                 .replace("{thumbnail_text}", str(hook_pkg.get("thumbnail_text", "")))
-                .replace("{style_notes}", style_notes)
+                .replace("{style_notes}", style_for_prompt)
             )
-            thumb_raw = ask(notebook_id, thumb_prompt, new=True)
+            thumb_raw = ask(notebook_id, thumb_prompt, new=True, source_ids=chat_source_ids)
             (out / "thumbnail_raw.txt").write_text(thumb_raw, encoding="utf-8")
             try:
                 thumb_spec = parse_thumbnail_json(thumb_raw)
