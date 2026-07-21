@@ -16,6 +16,7 @@
   "source_reconcile_timeout": 90,
   "source_wait_timeout": 900,
   "source_add_delay_sec": 5,
+  "pre_chat_delay_sec": 15,
   "clip_pad_start_sec": 0.0,
   "clip_pad_end_sec": 0.3,
   "max_clip_source_sec": 8.0,

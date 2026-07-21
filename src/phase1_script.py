@@ -100,13 +100,37 @@ def _parse_ask_response(raw_stdout: str) -> str:
     return text
 
 
+def _ask_cmd(
+    notebook_id: str,
+    prompt: str,
+    *,
+    prompt_file: Path | None,
+    new: bool,
+    request_timeout: int,
+    source_ids: list[str] | None,
+) -> list[str]:
+    cmd = [
+        "notebooklm", "ask",
+        *(["--prompt-file", str(prompt_file)] if prompt_file else [prompt]),
+        "--notebook", notebook_id,
+        "--request-timeout", str(request_timeout),
+        "--json",
+    ]
+    if new:
+        cmd.extend(["--new", "--yes"])
+    for sid in source_ids or []:
+        cmd.extend(["-s", sid])
+    return cmd
+
+
 def ask(
     notebook_id: str,
     prompt: str,
     *,
     new: bool = False,
-    retries: int = 4,
+    retries: int = 6,
     request_timeout: int = 180,
+    source_ids: list[str] | None = None,
 ) -> str:
     import subprocess
 
@@ -117,45 +141,54 @@ def ask(
         tmp.close()
         prompt_file = Path(tmp.name)
 
-    cmd = [
-        "notebooklm", "ask",
-        *(["--prompt-file", str(prompt_file)] if prompt_file else [prompt]),
-        "--notebook", notebook_id,
-        "--request-timeout", str(request_timeout),
-        "--json",
-    ]
-    if new:
-        cmd.extend(["--new", "--yes"])
-
     last_err = ""
     for attempt in range(retries):
+        cmd = _ask_cmd(
+            notebook_id,
+            prompt,
+            prompt_file=prompt_file,
+            new=new,
+            request_timeout=request_timeout,
+            source_ids=source_ids,
+        )
         result = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8")
-        if prompt_file:
-            prompt_file.unlink(missing_ok=True)
         if result.returncode == 0:
+            if prompt_file:
+                prompt_file.unlink(missing_ok=True)
             return _parse_ask_response(result.stdout)
         last_err = (result.stderr or result.stdout or "ask failed").strip()
         if attempt + 1 < retries and is_transient_notebooklm_error(last_err):
-            time.sleep(15 * (attempt + 1))
-            if len(prompt) > 6000:
+            wait = 20 * (attempt + 1)
+            print(f"  notebooklm ask retry {attempt + 2}/{retries} in {wait}s...", flush=True)
+            time.sleep(wait)
+            if len(prompt) > 6000 and (prompt_file is None or not prompt_file.exists()):
                 tmp = tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False, encoding="utf-8")
                 tmp.write(prompt)
                 tmp.close()
                 prompt_file = Path(tmp.name)
             continue
+        if prompt_file:
+            prompt_file.unlink(missing_ok=True)
         raise RuntimeError(last_err)
+    if prompt_file:
+        prompt_file.unlink(missing_ok=True)
     raise RuntimeError(last_err)
 
 
 def collect_multipart_text(
-    notebook_id: str, initial_prompt: str, continue_word: str = "Next", *, new: bool = False
+    notebook_id: str,
+    initial_prompt: str,
+    continue_word: str = "Next",
+    *,
+    new: bool = False,
+    source_ids: list[str] | None = None,
 ) -> tuple[str, int]:
-    first = ask(notebook_id, initial_prompt, new=new)
+    first = ask(notebook_id, initial_prompt, new=new, source_ids=source_ids)
     total = parse_total_parts(first)
     chunks = [clean_script_for_tts(strip_total_parts_header(strip_markdown(first)))]
     for part_num in range(2, total + 1):
         print(f"  Story part {part_num}/{total}...", flush=True)
-        cont = ask(notebook_id, continue_word)
+        cont = ask(notebook_id, continue_word, source_ids=source_ids)
         chunks.append(clean_script_for_tts(strip_total_parts_header(strip_markdown(cont))))
     return "\n\n".join(c for c in chunks if c), total
 
@@ -531,21 +564,43 @@ def main() -> None:
             reconcile_timeout=float(pipeline.get("source_reconcile_timeout", 90)),
         )
         srt_tmp.unlink(missing_ok=True)
-        wait_sources(notebook_id, [extract_source_id(added)], timeout=int(pipeline.get("source_wait_timeout", 900)))
+        srt_source_id = extract_source_id(added)
+        wait_sources(notebook_id, [srt_source_id], timeout=int(pipeline.get("source_wait_timeout", 900)))
 
         style_notes = _ingest_style_sources(notebook_id, pipeline)
         (out / "style_notes.txt").write_text(style_notes, encoding="utf-8")
 
+        pre_chat_delay = float(pipeline.get("pre_chat_delay_sec", 15))
+        if pre_chat_delay > 0:
+            print(f"  Waiting {pre_chat_delay:.0f}s before NotebookLM chat...", flush=True)
+            time.sleep(pre_chat_delay)
+
         movie_title = topic.split("—")[0].strip() if "—" in topic else topic
+        style_for_prompt = style_notes[:4000]
 
         print("[Hook] Title + cold open + thumbnail package...", flush=True)
         hook_prompt = (
             load_prompt("story_hook_package.txt")
             .replace("{movie_title}", movie_title)
             .replace("{duration_minutes}", str(duration))
-            .replace("{style_notes}", style_notes)
+            .replace("{style_notes}", style_for_prompt)
         )
-        hook_raw = ask(notebook_id, hook_prompt, new=True, request_timeout=300)
+        try:
+            hook_raw = ask(
+                notebook_id,
+                hook_prompt,
+                new=True,
+                request_timeout=300,
+                source_ids=[srt_source_id],
+            )
+        except RuntimeError as exc:
+            print(f"  WARN: hook ask failed after retries — using fallback package ({exc})", flush=True)
+            hook_raw = json.dumps({
+                "title": sanitize_seo_title(f"{movie_title} — Full Movie Recap"),
+                "cold_open": "",
+                "thumbnail_text": (movie_title.split("(")[0].strip()[:20] or "FULL RECAP").upper(),
+                "overlay_subtitle": "RECAP",
+            })
         (out / "hook_package_raw.txt").write_text(hook_raw, encoding="utf-8")
         try:
             hook_pkg = parse_hook_package_json(hook_raw)
@@ -568,11 +623,17 @@ def main() -> None:
             .replace("{duration_minutes}", str(duration))
             .replace("{continue_keyword}", continue_word)
             .replace("{target_words}", str(target_words))
-            .replace("{style_notes}", style_notes)
+            .replace("{style_notes}", style_for_prompt)
             .replace("{locked_title}", locked_title)
             .replace("{cold_open}", cold_open or "(Write a strong cold open matching the locked title.)")
         )
-        script, story_parts = collect_multipart_text(notebook_id, story_prompt, continue_word, new=True)
+        script, story_parts = collect_multipart_text(
+            notebook_id,
+            story_prompt,
+            continue_word,
+            new=True,
+            source_ids=[srt_source_id],
+        )
         script = clean_script_for_tts(script)
         word_count = len(script.split())
         print(f"  -> {word_count} words (target ~{target_words})", flush=True)
@@ -583,14 +644,26 @@ def main() -> None:
 
         print("[Scene map] Subtitle line ranges...", flush=True)
         map_prompt = build_scene_mapping_prompt(segments, blocks, pipeline)
-        map_raw = ask(notebook_id, map_prompt, new=True, request_timeout=300)
+        map_raw = ask(
+            notebook_id,
+            map_prompt,
+            new=True,
+            request_timeout=300,
+            source_ids=[srt_source_id],
+        )
         (out / "scene_mapping_raw.txt").write_text(map_raw, encoding="utf-8")
         try:
             mapping = parse_scene_mapping(map_raw, scene_count)
         except ValueError:
             print("  Retrying scene map with stricter JSON prompt...", flush=True)
             retry = map_prompt + "\n\nReply with ONLY raw JSON. No markdown."
-            map_raw = ask(notebook_id, retry, new=True, request_timeout=300)
+            map_raw = ask(
+                notebook_id,
+                retry,
+                new=True,
+                request_timeout=300,
+                source_ids=[srt_source_id],
+            )
             mapping = parse_scene_mapping(map_raw, scene_count)
 
         scene_clips = resolve_scene_clips(mapping, segments, blocks, pipeline)

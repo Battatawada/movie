@@ -160,6 +160,11 @@ def is_transient_notebooklm_error(message: str) -> bool:
             "temporarily unavailable",
             "rate limit",
             "rate_limited",
+            "parseable chunks",
+            "wire format",
+            "streaming chat",
+            "empty response",
+            "chatresponseparseerror",
         )
     )
 
