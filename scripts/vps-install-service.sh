@@ -7,6 +7,11 @@ MOVIES_DIR="${MOVIES_DIR:-/opt/movies}"
 APP_USER="${APP_USER:-niche}"
 WEBHOOK_SECRET="${WEBHOOK_SECRET:-}"
 APP_PORT="${APP_PORT:-8766}"
+ENV_FILE="${APP_ROOT}/.env"
+
+if [[ -z "$WEBHOOK_SECRET" && -f "$ENV_FILE" ]]; then
+  WEBHOOK_SECRET="$(grep -E '^WEBHOOK_SECRET=' "$ENV_FILE" | head -n1 | cut -d= -f2-)"
+fi
 
 if [[ -z "$WEBHOOK_SECRET" ]]; then
   WEBHOOK_SECRET="$(openssl rand -hex 32)"

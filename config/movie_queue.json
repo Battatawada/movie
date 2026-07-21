@@ -1,11 +1,11 @@
 {
   "movies": [
     {
-      "slug": "example-movie-1999",
-      "title": "Example Movie",
+      "slug": "magnolia-1999",
+      "title": "Magnolia",
       "year": 1999,
-      "enabled": false,
-      "notes": "Set enabled:true after placing movie.mp4 + subtitles.srt on VPS at /opt/movies/example-movie-1999/"
+      "enabled": true,
+      "topic": "Magnolia (1999) — Full Movie Recap"
     }
   ]
 }

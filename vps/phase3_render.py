@@ -129,31 +129,129 @@ def _resolve_bg_track(cfg: dict[str, Any], inputs: Path) -> Path | None:
     return None
 
 
-def _mix_bg_music(voice_mp3: Path, inputs: Path, work: Path, duration: float) -> Path:
-    import os
-
+def _mix_bg_music(
+    voice_mp3: Path,
+    inputs: Path,
+    work: Path,
+    duration: float,
+    scene_durations: list[dict[str, Any]] | None = None,
+) -> Path:
     cfg = _load_bg_music_config(inputs)
     track = _resolve_bg_track(cfg, inputs)
     if not track:
         return voice_mp3
 
-    volume = float(cfg.get("volume", 0.12))
+    base_volume = float(cfg.get("volume", 0.12))
     fade_in = float(cfg.get("fade_in_sec", 2.0))
     fade_out = float(cfg.get("fade_out_sec", 3.0))
+    crossfade = float(cfg.get("scene_crossfade_sec", 0.5))
+    dynamic = bool(cfg.get("scene_dynamic_volume", True))
+    duck = bool(cfg.get("duck_under_voice", False))
+    duck_amount = float(cfg.get("duck_amount", 0.65))
     out = work / "mixed_audio.mp3"
+
+    if dynamic and scene_durations and len(scene_durations) > 1:
+        bg_track = _build_scene_dynamic_bg(track, scene_durations, work, crossfade=crossfade)
+    else:
+        bg_track = _build_flat_bg(track, duration, base_volume, fade_in, fade_out, work)
+
+    if duck:
+        # Sidechain-style: voice-forward mix; bg stays under narration
+        _run([
+            "ffmpeg", "-y",
+            "-i", str(voice_mp3),
+            "-i", str(bg_track),
+            "-filter_complex",
+            (
+                f"[1:a]volume={duck_amount}[bgduck];"
+                f"[0:a][bgduck]amix=inputs=2:duration=first:weights=1 0.85:dropout_transition=2[aout]"
+            ),
+            "-map", "[aout]", "-t", str(duration),
+            "-c:a", "libmp3lame", "-q:a", "4", str(out),
+        ])
+    else:
+        _run([
+            "ffmpeg", "-y",
+            "-i", str(voice_mp3),
+            "-i", str(bg_track),
+            "-filter_complex",
+            "[0:a][1:a]amix=inputs=2:duration=first:dropout_transition=2[aout]",
+            "-map", "[aout]", "-t", str(duration),
+            "-c:a", "libmp3lame", "-q:a", "4", str(out),
+        ])
+    return out
+
+
+def _build_flat_bg(
+    track: Path, duration: float, volume: float, fade_in: float, fade_out: float, work: Path,
+) -> Path:
+    out = work / "bg_flat.mp3"
     fade_out_start = max(0.0, duration - fade_out)
     _run([
         "ffmpeg", "-y",
-        "-i", str(voice_mp3),
         "-stream_loop", "-1", "-i", str(track),
-        "-filter_complex",
-        (
-            f"[1:a]volume={volume},afade=t=in:st=0:d={fade_in},"
-            f"afade=t=out:st={fade_out_start}:d={fade_out}[bg];"
-            f"[0:a][bg]amix=inputs=2:duration=first:dropout_transition=2[aout]"
-        ),
-        "-map", "[aout]", "-t", str(duration),
+        "-af",
+        f"volume={volume},afade=t=in:st=0:d={fade_in},afade=t=out:st={fade_out_start}:d={fade_out}",
+        "-t", str(duration),
         "-c:a", "libmp3lame", "-q:a", "4", str(out),
+    ])
+    return out
+
+
+def _build_scene_dynamic_bg(
+    track: Path,
+    scene_durations: list[dict[str, Any]],
+    work: Path,
+    *,
+    crossfade: float = 0.5,
+) -> Path:
+    """Build bg bed with per-scene volume + crossfades between moods."""
+    segments: list[Path] = []
+    for i, scene in enumerate(scene_durations):
+        dur = max(0.5, float(scene.get("duration_sec", 5.0)))
+        vol = float(scene.get("music_volume", 0.12))
+        seg = work / f"bg_seg_{i:02d}.mp3"
+        # Offset into track so loops don't sound identical every scene
+        seek = (i * 17.5) % 120.0
+        _run([
+            "ffmpeg", "-y",
+            "-ss", _sec_to_ffmpeg(seek),
+            "-stream_loop", "-1", "-i", str(track),
+            "-t", str(dur),
+            "-af", f"volume={vol}",
+            "-c:a", "libmp3lame", "-q:a", "4", str(seg),
+        ])
+        segments.append(seg)
+
+    if len(segments) == 1:
+        return segments[0]
+
+    # Chain acrossfade for smooth volume/mood transitions
+    out = work / "bg_dynamic.mp3"
+    d = min(crossfade, 0.8)
+    if len(segments) == 2:
+        _run([
+            "ffmpeg", "-y",
+            "-i", str(segments[0]), "-i", str(segments[1]),
+            "-filter_complex", f"[0][1]acrossfade=d={d}:c1=tri:c2=tri[aout]",
+            "-map", "[aout]", "-c:a", "libmp3lame", "-q:a", "4", str(out),
+        ])
+        return out
+
+    # Build filter graph for N segments
+    inputs: list[str] = []
+    for seg in segments:
+        inputs.extend(["-i", str(seg)])
+    n = len(segments)
+    fc_parts: list[str] = [f"[0][1]acrossfade=d={d}:c1=tri:c2=tri[cf1]"]
+    for j in range(2, n):
+        prev = f"cf{j - 1}"
+        nxt = f"cf{j}" if j < n - 1 else "aout"
+        fc_parts.append(f"[{prev}][{j}]acrossfade=d={d}:c1=tri:c2=tri[{nxt}]")
+    _run([
+        "ffmpeg", "-y", *inputs,
+        "-filter_complex", ";".join(fc_parts),
+        "-map", "[aout]", "-c:a", "libmp3lame", "-q:a", "4", str(out),
     ])
     return out
 
@@ -259,7 +357,7 @@ async def run_render_async(
         voice_audio = full_audio
 
     video_dur = _probe_duration(video_only)
-    audio_in = str(_mix_bg_music(voice_audio, inputs, work, video_dur))
+    audio_in = str(_mix_bg_music(voice_audio, inputs, work, video_dur, scene_durations=durations))
 
     state["phase"] = "mux"
     _write_state(state_path, state)

@@ -39,7 +39,12 @@ Write-Host "==> Install on VPS"
 ssh -i $KeyPath $SshHost $installCmd
 
 Write-Host "==> Install systemd service"
-ssh -i $KeyPath $SshHost "sudo bash $RemoteRoot/scripts/vps-install-service.sh"
+$existingSecret = ssh -i $KeyPath $SshHost "sudo grep -E '^WEBHOOK_SECRET=' $RemoteRoot/.env 2>/dev/null | head -n1 | cut -d= -f2-"
+if ($existingSecret) {
+    ssh -i $KeyPath $SshHost "sudo WEBHOOK_SECRET='$existingSecret' bash $RemoteRoot/scripts/vps-install-service.sh"
+} else {
+    ssh -i $KeyPath $SshHost "sudo bash $RemoteRoot/scripts/vps-install-service.sh"
+}
 
 Write-Host "==> Health"
 ssh -i $KeyPath $SshHost "curl -sf http://127.0.0.1:8766/health; echo"

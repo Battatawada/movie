@@ -94,40 +94,55 @@ def _load_font(size: int, bold: bool = True) -> ImageFont.FreeTypeFont | ImageFo
 
 
 def compose_thumbnail(meta: dict[str, Any], src: Path, dest: Path, *, size: tuple[int, int] = (1280, 720)) -> Path:
-    """Crop to 16:9, dark gradient, bold title + subtitle."""
+    """Crop to 16:9 (right-biased), dark left scrim, bold left-aligned title + subtitle."""
     img = Image.open(src).convert("RGB")
-    img = _crop_center_16_9(img, size)
+    img = _crop_right_weighted_16_9(img, size)
 
     overlay = Image.new("RGBA", size, (0, 0, 0, 0))
     draw = ImageDraw.Draw(overlay)
-    for y in range(int(size[1] * 0.45), size[1]):
-        alpha = int(200 * (y - size[1] * 0.45) / (size[1] * 0.55))
-        draw.line([(0, y), (size[0], y)], fill=(0, 0, 0, min(220, alpha)))
+    # Left third scrim for text readability
+    left_w = int(size[0] * 0.42)
+    for x in range(left_w):
+        alpha = int(180 * (1 - x / left_w))
+        draw.line([(x, 0), (x, size[1])], fill=(0, 0, 0, min(200, alpha)))
+    for y in range(int(size[1] * 0.5), size[1]):
+        alpha = int(120 * (y - size[1] * 0.5) / (size[1] * 0.5))
+        draw.line([(0, y), (size[0], y)], fill=(0, 0, 0, min(160, alpha)))
 
     base = img.convert("RGBA")
     base = Image.alpha_composite(base, overlay)
 
     draw = ImageDraw.Draw(base)
-    title = str(meta.get("overlay_title") or meta.get("title", "RECAP"))[:24].upper()
+    raw_title = str(meta.get("overlay_title") or meta.get("thumbnail_text") or meta.get("title", "RECAP"))
+    title_words = raw_title.strip().upper().split()[:4]
     subtitle = str(meta.get("overlay_subtitle") or "RECAP")[:16].upper()
     text_color = _hex_to_rgb(str(meta.get("text_color", "#FFFFFF")))
-    accent = _hex_to_rgb(str(meta.get("accent_color", "#FFD700")))
+    accent = _hex_to_rgb(str(meta.get("accent_color", "#E63946")))
 
-    title_font = _load_font(72)
-    sub_font = _load_font(44)
+    title_font = _load_font(68)
+    sub_font = _load_font(40)
 
-    tw, th = draw.textbbox((0, 0), title, font=title_font)[2:]
-    sw, sh = draw.textbbox((0, 0), subtitle, font=sub_font)[2:]
-    tx = (size[0] - tw) // 2
-    ty = size[1] - th - sh - 80
-    sx = (size[0] - sw) // 2
-    sy = ty + th + 12
+    tx = 48
+    ty = size[1] // 2 - 60
 
-    for dx, dy in [(-2, 0), (2, 0), (0, -2), (0, 2)]:
-        draw.text((tx + dx, ty + dy), title, font=title_font, fill=(0, 0, 0))
-        draw.text((sx + dx, sy + dy), subtitle, font=sub_font, fill=(0, 0, 0))
-    draw.text((tx, ty), title, font=title_font, fill=text_color)
-    draw.text((sx, sy), subtitle, font=sub_font, fill=accent)
+    def _stroke_text(x: int, y: int, text: str, font: ImageFont.FreeTypeFont | ImageFont.ImageFont, fill: tuple[int, int, int]) -> None:
+        for dx, dy in [(-2, 0), (2, 0), (0, -2), (0, 2), (-2, -2), (2, 2)]:
+            draw.text((x + dx, y + dy), text, font=font, fill=(0, 0, 0))
+        draw.text((x, y), text, font=font, fill=fill)
+
+    if title_words:
+        line_y = ty
+        line_parts: list[tuple[str, tuple[int, int, int]]] = []
+        for i, word in enumerate(title_words):
+            color = accent if i == len(title_words) - 1 else text_color
+            line_parts.append((word, color))
+        x_cursor = tx
+        for word, color in line_parts:
+            _stroke_text(x_cursor, line_y, word, title_font, color)
+            x_cursor += draw.textbbox((0, 0), word + " ", font=title_font)[2]
+
+    sy = ty + 80
+    _stroke_text(tx, sy, subtitle, sub_font, accent)
 
     dest.parent.mkdir(parents=True, exist_ok=True)
     base.convert("RGB").save(dest, format="PNG", optimize=True)
@@ -135,12 +150,17 @@ def compose_thumbnail(meta: dict[str, Any], src: Path, dest: Path, *, size: tupl
 
 
 def _crop_center_16_9(img: Image.Image, size: tuple[int, int]) -> Image.Image:
+    return _crop_right_weighted_16_9(img, size, bias=0.5)
+
+
+def _crop_right_weighted_16_9(img: Image.Image, size: tuple[int, int], *, bias: float = 0.62) -> Image.Image:
+    """Crop to 16:9 with horizontal bias so subject tends right (text goes left)."""
     target_ratio = size[0] / size[1]
     w, h = img.size
     current = w / h
     if current > target_ratio:
         new_w = int(h * target_ratio)
-        left = (w - new_w) // 2
+        left = int((w - new_w) * bias)
         img = img.crop((left, 0, left + new_w, h))
     else:
         new_h = int(w / target_ratio)

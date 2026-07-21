@@ -17,8 +17,22 @@
   "clip_pad_start_sec": 0.0,
   "clip_pad_end_sec": 0.3,
   "max_clip_source_sec": 8.0,
+  "tts_provider": "azure",
+  "tts_modulation": true,
+  "tts_humanize": true,
+  "tts_merge_chunks": true,
+  "tts_chunk_pause_ms": 120,
+  "tts_azure_style_degree": 0.92,
   "tts_voices": ["en-US-ChristopherNeural"],
-  "tts_rate": "-3%",
+  "tts_voice_pool": {
+    "narrator": "en-US-ChristopherNeural",
+    "narrator_alt": "en-US-ChristopherNeural",
+    "quote_male": "en-US-GuyNeural",
+    "quote_female": "en-US-AriaNeural",
+    "authority": "en-US-GuyNeural",
+    "witness": "en-US-JennyNeural"
+  },
+  "tts_rate": "-4%",
   "letterbox_color": "0x000000",
   "captions": {
     "burn_into_video": false,
@@ -32,7 +46,10 @@
     "volume": 0.12,
     "fade_in_sec": 2.0,
     "fade_out_sec": 3.0,
-    "duck_under_voice": false
+    "scene_dynamic_volume": true,
+    "scene_crossfade_sec": 0.5,
+    "duck_under_voice": true,
+    "duck_amount": 0.65
   },
   "end_card": {
     "enabled": true,

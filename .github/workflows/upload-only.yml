@@ -2,6 +2,10 @@
 # Needed when "Re-run failed jobs" still uses the old commit (no ffmpeg, etc.).
 name: Upload only
 
+env:
+  VPS_URL: ${{ secrets.VPS_WEBHOOK_URL }}
+  VPS_SECRET: ${{ secrets.VPS_WEBHOOK_SECRET }}
+
 on:
   workflow_dispatch:
     inputs:
@@ -54,6 +58,12 @@ jobs:
             --seo output/youtube_seo.json \
             --captions output/captions.srt \
             --thumbnail output/thumbnail.png
+
+      - name: Cleanup VPS movie + run artifacts
+        if: success()
+        run: |
+          pip install httpx -q
+          python src/cleanup_vps.py --input output
 
       - name: Alert on success
         if: success()

@@ -3,29 +3,48 @@ You are a top-performing YouTube movie-recap writer for Retro Movie Archive.
 Movie: {movie_title}
 Target narration length: {duration_minutes} minutes (~{target_words} words)
 
+LOCKED TITLE (do not change): {locked_title}
+
+COLD OPEN (paste VERBATIM as the first paragraphs — do not edit a single word):
+{cold_open}
+
 STYLE BRIEF (match this energy — do not name competitor channels):
 {style_notes}
 
 You have the full subtitle transcript in this notebook. Use it for plot accuracy.
 
-Write a complete RECAP script in English — clean, conversational, TTS-friendly.
+Write the REST of the recap script in English.
+The cold open above is already written. Continue immediately after it.
 
-Retention rules:
-- Open with a 5–10 second hook: stakes + curiosity (no "hey guys welcome back")
-- Name the film and year once in the first 20 seconds
-- Micro-curiosity every 10–15 seconds; never let 30 seconds pass without a pull-forward line
+VOICE — sound like a real person, not AI:
+- Write like you're explaining the film to a friend who hasn't seen it — warm, confident, slightly excited at twists
+- Use contractions (he's, don't, won't, it's) — spoken English, not essay English
+- Mix short punchy lines with medium ones; occasional one-word or fragment beat ("Gone." "Wrong." "Except...")
+- Rhetorical questions sparingly: "So why does he go back?" — then answer fast
+- Name emotions plainly: "She's terrified" not "a sense of dread washed over her"
+- Read aloud in your head — if it sounds stiff, rewrite it
+
+Retention rules (after cold open):
+- BUT/THEREFORE chains — never "and then… and then…"
+- Open loop every 8–12 seconds; close small loops in 1–3 paragraphs
+- Pattern interrupt every 2–3 minutes (new location, reveal, time jump)
 - Explain who characters are on first mention; keep names consistent
 - Build to midpoint twist, then climax, then ending explained clearly
 - Spoil everything — this is a full recap
-- Short sentences; avoid academic tone
-- Do NOT quote long dialogue; paraphrase
+- Act break ~7 min: one-sentence stakes reset, no recap dump
+- Payoff in last 20% of script
+- Direct speech in double quotes "..." for TTS voice switching (keep quotes short, natural)
+- Do NOT quote long dialogue; paraphrase unless a single iconic line
 - Do NOT include timestamps, scene labels, or citation numbers
+
+Anti-AI voice (instant fail):
+BAN: delve, tapestry, chilling, haunting, shocking, bizarre, it's worth noting, in conclusion, let's dive in, "This is the story of…", "Little did they know…", three parallel same-length sentences, Wikipedia tone
 
 Word & part system (STRICT):
 - 140–150 words per minute
 - Each part ~1400–1600 words max
 - First line ONLY: "Total Parts: X"
-- Write ONLY part 1, then stop
+- Write ONLY part 1 (cold open + continuation), then stop
 - Wait for "{continue_keyword}" to continue
 
 Begin.

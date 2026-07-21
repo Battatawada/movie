@@ -19,6 +19,7 @@ Reply with ONLY valid JSON (no markdown):
       "scene_id": 1,
       "subtitle_start": 1,
       "subtitle_end": 8,
+      "music_mood": "mystery|tense|action|reveal|emotional|calm",
       "reason": "brief note"
     }}
   ]
@@ -30,3 +31,4 @@ Rules:
 - Each range should cover 3–40 subtitle lines; prefer the visual beat, not the whole film
 - Ranges must not overlap heavily; move forward through the film
 - Clip source will be at most {max_clip_sec} seconds — pick tight visual moments
+- music_mood must match narration energy: calm (exposition), mystery (questions), tense (danger), action (chase/fight), reveal (twist), emotional (loss/love)

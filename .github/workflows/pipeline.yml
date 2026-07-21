@@ -85,7 +85,10 @@ jobs:
           RUN_ID=$(python -c "import json; print(json.load(open('output/metadata.json'))['run_id'])")
           echo "run_id=$RUN_ID" >> "$GITHUB_OUTPUT"
 
-      - name: Phase 2 — edge-tts
+      - name: Phase 2 — Azure TTS (+ edge fallback)
+        env:
+          AZURE_SPEECH_KEY: ${{ secrets.AZURE_SPEECH_KEY }}
+          AZURE_SPEECH_REGION: ${{ secrets.AZURE_SPEECH_REGION }}
         run: python src/phase2_audio.py --input output --output output
 
       - name: Trigger VPS clip render
@@ -199,6 +202,14 @@ jobs:
             --seo output/youtube_seo.json \
             --captions output/captions.srt \
             --thumbnail output/thumbnail.png
+
+      - name: Cleanup VPS movie + run artifacts
+        if: success()
+        run: |
+          pip install httpx -q
+          python src/cleanup_vps.py \
+            --input output \
+            --run-id "${{ needs.script-and-audio.outputs.run_id }}"
 
       - name: Alert on success
         if: success()

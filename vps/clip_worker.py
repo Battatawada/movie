@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
+import shutil
 from pathlib import Path
 from typing import Any
 
@@ -22,6 +24,9 @@ WEBHOOK_SECRET = os.environ.get("WEBHOOK_SECRET", "")
 
 _jobs: dict[str, asyncio.Task] = {}
 
+_SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]*[a-z0-9]$|^[a-z0-9]$")
+_RUN_ID_RE = re.compile(r"^[0-9]{8}-[0-9]{6}$")
+
 
 class GeneratePayload(BaseModel):
     run_id: str
@@ -33,6 +38,16 @@ def verify_auth(request: Request) -> None:
     auth = request.headers.get("Authorization", "")
     if auth != f"Bearer {WEBHOOK_SECRET}":
         raise HTTPException(401, "Unauthorized")
+
+
+def _valid_slug(slug: str) -> None:
+    if not _SLUG_RE.match(slug):
+        raise HTTPException(400, "Invalid slug")
+
+
+def _valid_run_id(run_id: str) -> None:
+    if not _RUN_ID_RE.match(run_id):
+        raise HTTPException(400, "Invalid run_id")
 
 
 def _state_path(run_id: str) -> Path:
@@ -81,10 +96,22 @@ def list_movies(_: None = Depends(verify_auth)) -> dict[str, Any]:
     return {"movies": items}
 
 
+@app.delete("/movies/{slug}")
+def delete_movie(slug: str, _: None = Depends(verify_auth)) -> dict[str, Any]:
+    """Remove source film from the VPS library after a successful pipeline run."""
+    _valid_slug(slug)
+    movie_dir = MOVIES_DIR / slug
+    if not movie_dir.exists():
+        return {"slug": slug, "status": "not_found"}
+    if not movie_dir.is_dir():
+        raise HTTPException(400, "Not a movie directory")
+    shutil.rmtree(movie_dir)
+    return {"slug": slug, "status": "deleted"}
+
+
 @app.get("/movies/{slug}/srt")
 def get_movie_srt(slug: str, _: None = Depends(verify_auth)) -> JSONResponse:
-    if ".." in slug or "/" in slug:
-        raise HTTPException(400, "Invalid slug")
+    _valid_slug(slug)
     srt_path = MOVIES_DIR / slug / "subtitles.srt"
     if not srt_path.exists():
         raise HTTPException(404, f"No subtitles for {slug}")
@@ -182,6 +209,22 @@ def get_output(run_id: str, filename: str, _: None = Depends(verify_auth)) -> Fi
         raise HTTPException(404, "File not found")
     media = "video/mp4" if filename.endswith(".mp4") else "image/png"
     return FileResponse(path, media_type=media)
+
+
+@app.delete("/runs/{run_id}")
+def delete_run(run_id: str, _: None = Depends(verify_auth)) -> dict[str, Any]:
+    """Remove render inputs/output for a completed run."""
+    _valid_run_id(run_id)
+    run_dir = RUNS_DIR / run_id
+    if not run_dir.exists():
+        return {"run_id": run_id, "status": "not_found"}
+    if not run_dir.is_dir():
+        raise HTTPException(400, "Not a run directory")
+    task = _jobs.pop(run_id, None)
+    if task and not task.done():
+        task.cancel()
+    shutil.rmtree(run_dir)
+    return {"run_id": run_id, "status": "deleted"}
 
 
 def main() -> None:

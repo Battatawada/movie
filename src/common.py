@@ -749,6 +749,14 @@ def parse_seo_json(text: str) -> dict:
     raise ValueError("No SEO JSON object in NotebookLM response")
 
 
+def parse_hook_package_json(text: str) -> dict:
+    blocks = extract_json_blocks(text)
+    for block in blocks:
+        if isinstance(block, dict) and block.get("cold_open") and block.get("title"):
+            return block
+    raise ValueError("No hook package JSON in NotebookLM response")
+
+
 def sanitize_seo_title(title: str, max_chars: int = 65) -> str:
     cleaned = re.sub(r"\*+", "", title or "").strip(" -–—")
     return cleaned[:max_chars].strip()

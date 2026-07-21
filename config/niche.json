@@ -4,5 +4,5 @@
   "tagline": "Classic films. Condensed. Narrated.",
   "description": "Retro Movie Archive — full movie recaps with real footage and original narration.\n\nWe break down classic and cult films scene by scene: the plot, the twists, and the ending — in minutes, not hours.\n\nNew recaps weekly.\n\nSubscribe: https://www.youtube.com/@retromoviearchive",
   "audience": "movie fans who want quick plot recaps and ending explanations",
-  "topic_format": "{movie_title} ({year}) — Full Movie Recap"
+  "topic_format": "{movie_title} ({year}) — hook-driven recap title from story_hook_package"
 }

@@ -4,10 +4,10 @@ Phase 1 — Movie recap script + subtitle scene map
 
   1. Pick next movie from queue (VPS library)
   2. Load SRT transcript (VPS API or local)
-  3. NotebookLM: ingest SRT → recap script (multi-part)
+  3. NotebookLM: style brief → hook package → recap script (multi-part)
   4. NotebookLM: map each narration scene → subtitle line range
   5. Resolve timestamps from SRT (ground truth)
-  6. YouTube SEO + thumbnail brief
+  6. YouTube SEO (locked title) + thumbnail brief
 """
 
 from __future__ import annotations
@@ -43,7 +43,9 @@ from common import (
     new_run_id,
     notebooklm_json_with_retry,
     parse_numbered_topics,
+    parse_hook_package_json,
     parse_seo_json,
+    sanitize_seo_title,
     parse_total_parts,
     save_json,
     split_script_for_scenes,
@@ -307,6 +309,7 @@ def resolve_scene_clips(
             "end": end_sec,
             "start_ffmpeg": _sec_to_ffmpeg(start_sec),
             "end_ffmpeg": _sec_to_ffmpeg(end_sec),
+            "music_mood": row.get("music_mood"),
         })
     return out
 
@@ -352,6 +355,9 @@ def _collect_seed_urls() -> list[str]:
 
 
 def _default_style_notes() -> str:
+    playbook = CONFIG / "channel_playbook.md"
+    if playbook.exists():
+        return playbook.read_text(encoding="utf-8")[:8000]
     return (
         "- Hook in first 10s with stakes + curiosity\n"
         "- Calm confident narrator; spoil full plot\n"
@@ -464,6 +470,13 @@ def main() -> None:
         scene_clips = resolve_scene_clips(mapping, segments, blocks, pipeline)
         seo = fallback_seo(topic)
         style_notes = _default_style_notes()
+        hook_pkg = {
+            "title": f"{topic} — Full Movie Recap",
+            "cold_open": script[:400],
+            "thumbnail_text": "FULL RECAP",
+            "overlay_subtitle": "RECAP",
+        }
+        locked_title = hook_pkg["title"]
         story_parts = 1
         notebook_id = ""
     else:
@@ -507,7 +520,31 @@ def main() -> None:
         (out / "style_notes.txt").write_text(style_notes, encoding="utf-8")
 
         movie_title = topic.split("—")[0].strip() if "—" in topic else topic
-        print("[Script] Multi-part recap...", flush=True)
+
+        print("[Hook] Title + cold open + thumbnail package...", flush=True)
+        hook_prompt = (
+            load_prompt("story_hook_package.txt")
+            .replace("{movie_title}", movie_title)
+            .replace("{duration_minutes}", str(duration))
+            .replace("{style_notes}", style_notes)
+        )
+        hook_raw = ask(notebook_id, hook_prompt, new=True, request_timeout=300)
+        (out / "hook_package_raw.txt").write_text(hook_raw, encoding="utf-8")
+        try:
+            hook_pkg = parse_hook_package_json(hook_raw)
+        except ValueError:
+            hook_pkg = {
+                "title": sanitize_seo_title(f"{movie_title} — Full Movie Recap"),
+                "cold_open": "",
+                "thumbnail_text": movie_title.split("(")[0].strip()[:20].upper(),
+                "overlay_subtitle": "RECAP",
+            }
+        locked_title = sanitize_seo_title(str(hook_pkg.get("title", topic)))
+        cold_open = clean_script_for_tts(str(hook_pkg.get("cold_open", "")))
+        save_json(out / "hook_package.json", {**hook_pkg, "title": locked_title, "cold_open": cold_open})
+        print(f"  -> locked title: {locked_title}", flush=True)
+
+        print("[Script] Multi-part recap (hook-first)...", flush=True)
         story_prompt = (
             load_prompt("story_generation.txt")
             .replace("{movie_title}", movie_title)
@@ -515,6 +552,8 @@ def main() -> None:
             .replace("{continue_keyword}", continue_word)
             .replace("{target_words}", str(target_words))
             .replace("{style_notes}", style_notes)
+            .replace("{locked_title}", locked_title)
+            .replace("{cold_open}", cold_open or "(Write a strong cold open matching the locked title.)")
         )
         script, story_parts = collect_multipart_text(notebook_id, story_prompt, continue_word, new=True)
         script = clean_script_for_tts(script)
@@ -541,10 +580,11 @@ def main() -> None:
         print(f"  -> {len(scene_clips)} clips resolved from SRT", flush=True)
 
         past_topics = format_topic_history_for_prompt(history)
-        print("[SEO] YouTube metadata...", flush=True)
+        print("[SEO] YouTube metadata (locked title)...", flush=True)
         seo_prompt = (
             load_prompt("youtube_seo.txt")
             .replace("{topic}", topic)
+            .replace("{locked_title}", locked_title)
             .replace("{past_topics}", past_topics)
             .replace("{style_notes}", style_notes)
         )
@@ -553,6 +593,7 @@ def main() -> None:
             seo = parse_seo_json(seo_raw)
         except ValueError:
             seo = fallback_seo(topic)
+        seo["title"] = locked_title
 
         thumbnail_meta = None
         if pipeline.get("generate_thumbnail", True):
@@ -561,7 +602,8 @@ def main() -> None:
             thumb_prompt = (
                 load_prompt("thumbnail.txt")
                 .replace("{topic}", topic)
-                .replace("{title}", seo.get("title", topic))
+                .replace("{title}", locked_title)
+                .replace("{thumbnail_text}", str(hook_pkg.get("thumbnail_text", "")))
                 .replace("{style_notes}", style_notes)
             )
             thumb_raw = ask(notebook_id, thumb_prompt, new=True)
@@ -570,14 +612,15 @@ def main() -> None:
                 thumb_spec = parse_thumbnail_json(thumb_raw)
             except ValueError:
                 thumb_spec = {
-                    "image_search_query": topic,
-                    "overlay_title": movie_title.split("(")[0].strip()[:20],
-                    "overlay_subtitle": "RECAP",
+                    "image_search_query": hook_pkg.get("image_search_query") or topic,
+                    "overlay_title": hook_pkg.get("thumbnail_text") or movie_title.split("(")[0].strip()[:20],
+                    "overlay_subtitle": hook_pkg.get("overlay_subtitle") or "RECAP",
                 }
             thumbnail_meta = {
                 **thumb_spec,
                 "topic": topic,
-                "title": seo.get("title", topic),
+                "title": locked_title,
+                "thumbnail_text": hook_pkg.get("thumbnail_text"),
             }
             print(f"  -> thumbnail spec: {thumbnail_meta.get('overlay_title')}", flush=True)
 
@@ -613,6 +656,7 @@ def main() -> None:
         "target_word_count": target_words,
         "scene_count": len(scene_clips),
         "title": seo.get("title"),
+        "locked_title": locked_title if not args.dry_run else seo.get("title"),
     }
     if not args.dry_run:
         meta["story_parts"] = story_parts

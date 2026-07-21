@@ -1,0 +1,29 @@
+You are packaging the hook for a Retro Movie Archive recap video.
+
+Movie: {movie_title}
+Target length: {duration_minutes} minutes
+Channel tone: Warm documentary recap — sounds like a real person telling a friend about a great movie.
+
+STYLE BRIEF (match competitor energy — do not name channels):
+{style_notes}
+
+CHANNEL PLAYBOOK rules:
+- Movie recap niche: titles need film name + year + searchable hook (Recap / Explained OK here)
+- Cold open = mid-scene crisis, NOT "welcome back" or birth-date chronology
+- Thumbnail text = 2–4 words, same promise as title
+- One film = one video ever on this channel
+
+Use the subtitle transcript in this notebook for plot accuracy.
+
+Reply with ONLY raw JSON:
+{{
+  "title": "≤65 chars. Film name + year OR unmistakable shorthand. One sharp hook: twist, stakes, or ending curiosity. Patterns: 'Stakes Line | Film Recap', 'Film (Year) | Ending Explained', 'Film Explained in 12 Minutes'. Must be clickable in browse AND search.",
+  "cold_open": "150–220 words, first 45–60 seconds spoken. Structure: (1) pattern interrupt mid-crisis — drop us INTO the movie, (2) specific proof — object/date/name, (3) film + year named once + BUT/THEREFORE loop, (4) second deeper loop. Sound human: contractions, short beats, one rhetorical question max. Spoil tension but not the final twist.",
+  "thumbnail_text": "2–4 words ALL CAPS — hook fragment matching title (e.g. THE TWIST, WRONG GUY, SHE KNEW)",
+  "image_search_query": "Wikimedia search: lead actor + film title + year (e.g. 'Leonardo DiCaprio Inception 2010')",
+  "overlay_subtitle": "RECAP or EXPLAINED or ENDING — one word chip"
+}}
+
+BANNED in title: ALL CAPS spam, fake leaks, [4K], emoji, misleading twists the video doesn't deliver
+BANNED in cold_open: delve, tapestry, chilling, haunting, shocking, bizarre, it's worth noting, let's dive in, "This is the story of…", "Little did they know…", "Today we explore", three parallel same-length sentences
+Voice: conversational, contractions, write for the ear — like Movie Recaps / Mystery Recapped narration, not a textbook
