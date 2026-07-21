@@ -85,7 +85,17 @@ jobs:
           RUN_ID=$(python -c "import json; print(json.load(open('output/metadata.json'))['run_id'])")
           echo "run_id=$RUN_ID" >> "$GITHUB_OUTPUT"
 
-      - name: Phase 2 — Azure TTS (+ edge fallback)
+      - name: Verify Azure Speech secrets
+        env:
+          AZURE_SPEECH_KEY: ${{ secrets.AZURE_SPEECH_KEY }}
+          AZURE_SPEECH_REGION: ${{ secrets.AZURE_SPEECH_REGION }}
+        run: |
+          if [ -z "$AZURE_SPEECH_KEY" ] || [ -z "$AZURE_SPEECH_REGION" ]; then
+            echo "AZURE_SPEECH_KEY and AZURE_SPEECH_REGION must be set (shared Speech account)."
+            exit 1
+          fi
+
+      - name: Phase 2 — Azure TTS
         env:
           AZURE_SPEECH_KEY: ${{ secrets.AZURE_SPEECH_KEY }}
           AZURE_SPEECH_REGION: ${{ secrets.AZURE_SPEECH_REGION }}

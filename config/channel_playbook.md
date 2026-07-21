@@ -94,7 +94,7 @@ Reference channels often **name the film early** (search intent) but **open mid-
 | **Humanize** | Variable pauses (200–520ms), pitch micro-drift, contraction-friendly scripts | Avoids "same cadence every sentence" AI tell |
 | **Rate** | `-4%` | Slightly slower = clearer + more natural at 145 wpm |
 | **Quote VO** | `en-US-GuyNeural` (male), `en-US-AriaNeural` (female) | Brief dialogue in double quotes only |
-| **Fallback** | Edge TTS (same voice names) | When Azure fails or shared quota exhausted |
+| **Fallback** | None — Azure only; pipeline fails if keys missing or quota exceeded |
 | **Bg music** | `ambient_cinematic.mp3` — **per-scene volume** + 0.5s crossfades | Rises on tense/action/reveal beats, dips on hook + calm exposition |
 | **Ducking** | `duck_under_voice: true` @ 65% bed level | Voice always wins — music supports, never masks |
 | **End card** | Same Christopher voice, friendly outro style | 5–8 sec subscribe CTA |
