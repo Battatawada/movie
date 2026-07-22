@@ -41,7 +41,13 @@ def main() -> None:
             sys.exit(f"Missing env {key}")
 
     youtube = build_youtube()
-    youtube.videos().delete(id=args.video_id).execute()
+    try:
+        youtube.videos().delete(id=args.video_id).execute()
+    except Exception as exc:  # noqa: BLE001
+        if "videoNotFound" in str(exc) or "404" in str(exc):
+            print(f"video_id={args.video_id} already gone")
+            return
+        raise
     print(f"deleted video_id={args.video_id}")
 
 
