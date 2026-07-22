@@ -165,6 +165,12 @@ def main() -> None:
                 }
             )
         )
+        expected = float(meta.get("total_audio_sec") or 0)
+        if expected > 0 and duration_sec < expected * 0.5:
+            sys.exit(
+                f"Video too short ({duration_sec:.0f}s vs expected ~{expected:.0f}s narration) — "
+                "refusing upload. Re-render on VPS before retrying."
+            )
 
     youtube = build_youtube()
     body = {

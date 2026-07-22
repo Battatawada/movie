@@ -202,9 +202,10 @@ async def generate(
         raise HTTPException(400, "Upload inputs first via POST /runs/{run_id}/inputs")
 
     state_path = _state_path(run_id)
+    final_video = RUNS_DIR / run_id / "output" / "final_video.mp4"
     if state_path.exists():
         existing = json.loads(state_path.read_text(encoding="utf-8"))
-        if existing.get("status") == "complete":
+        if existing.get("status") == "complete" and final_video.is_file() and final_video.stat().st_size > 1_000_000:
             return {"run_id": run_id, "status": "already_complete"}
 
     meta = json.loads((inputs_dir / "metadata.json").read_text(encoding="utf-8"))

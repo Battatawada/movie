@@ -79,6 +79,11 @@ def main() -> None:
     validate_scene_clips(scene_clips, scene_durations)
 
     with httpx.Client(timeout=300.0) as client:
+        # Wipe any stale run dir so /generate cannot return already_complete from a bad prior render.
+        wipe = client.delete(f"{base}/runs/{run_id}", headers=headers)
+        if wipe.status_code not in (200, 404):
+            sys.exit(f"Failed to reset VPS run {run_id}: {wipe.status_code} {wipe.text}")
+
         resp = client.post(
             f"{base}/runs/{run_id}/inputs",
             headers=headers,
