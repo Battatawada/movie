@@ -28,7 +28,8 @@ from common import (
     append_topic_history,
     clean_script_for_tts,
     clips_to_scenes,
-    condensed_style_notes,
+    notebooklm_style_brief,
+    PLAYBOOK_STYLE_BRIEF,
     estimate_scene_count,
     extract_json_blocks,
     extract_notebook_id,
@@ -276,6 +277,49 @@ def build_scene_mapping_prompt(
         if index_blocks > 10:
             index_blocks = max(10, index_blocks - 5)
         prompt = _render(seg_chars, index_blocks)
+    return prompt
+
+
+def build_story_generation_prompt(
+    movie_title: str,
+    duration: int,
+    continue_word: str,
+    target_words: int,
+    locked_title: str,
+    cold_open: str,
+    style_notes: str,
+) -> str:
+    """Assemble story prompt and trim inline fields to stay under NotebookLM limits."""
+    from common import MAX_NOTEBOOKLM_ASK_CHARS
+
+    style = style_notes
+    cold = cold_open or "(Write a strong cold open matching the locked title.)"
+
+    def render() -> str:
+        return (
+            load_prompt("story_generation.txt")
+            .replace("{movie_title}", movie_title)
+            .replace("{duration_minutes}", str(duration))
+            .replace("{continue_keyword}", continue_word)
+            .replace("{target_words}", str(target_words))
+            .replace("{style_notes}", style)
+            .replace("{locked_title}", locked_title)
+            .replace("{cold_open}", cold)
+        )
+
+    prompt = render()
+    while len(prompt) > MAX_NOTEBOOKLM_ASK_CHARS:
+        if len(style) > len(PLAYBOOK_STYLE_BRIEF):
+            style = style[: max(len(PLAYBOOK_STYLE_BRIEF), len(style) - 300)]
+        elif len(cold) > 400:
+            cold = cold[: max(400, len(cold) - 300)].rstrip() + "…"
+        else:
+            raise RuntimeError(
+                f"Story prompt still too long ({len(prompt)} chars > {MAX_NOTEBOOKLM_ASK_CHARS}) "
+                "after trimming style and cold open."
+            )
+        prompt = render()
+        print(f"  Trimmed story prompt to {len(prompt)} chars", flush=True)
     return prompt
 
 
@@ -617,8 +661,10 @@ def main() -> None:
 
         style_notes = _ingest_style_sources(notebook_id, pipeline)
         (out / "style_notes.txt").write_text(style_notes, encoding="utf-8")
-        style_for_prompt = condensed_style_notes(style_notes)
         playbook_source_id = _attach_playbook_source(notebook_id, pipeline)
+        style_for_prompt = notebooklm_style_brief(
+            style_notes, playbook_in_notebook=bool(playbook_source_id)
+        )
         chat_source_ids = [srt_source_id]
         if playbook_source_id:
             chat_source_ids.append(playbook_source_id)
@@ -660,15 +706,14 @@ def main() -> None:
         print(f"  -> locked title: {locked_title}", flush=True)
 
         print("[Script] Multi-part recap (hook-first)...", flush=True)
-        story_prompt = (
-            load_prompt("story_generation.txt")
-            .replace("{movie_title}", movie_title)
-            .replace("{duration_minutes}", str(duration))
-            .replace("{continue_keyword}", continue_word)
-            .replace("{target_words}", str(target_words))
-            .replace("{style_notes}", style_for_prompt)
-            .replace("{locked_title}", locked_title)
-            .replace("{cold_open}", cold_open or "(Write a strong cold open matching the locked title.)")
+        story_prompt = build_story_generation_prompt(
+            movie_title=movie_title,
+            duration=duration,
+            continue_word=continue_word,
+            target_words=target_words,
+            locked_title=locked_title,
+            cold_open=cold_open,
+            style_notes=style_for_prompt,
         )
         script, story_parts = collect_multipart_text(
             notebook_id,

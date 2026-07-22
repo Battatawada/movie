@@ -369,6 +369,7 @@ def notebooklm_source_add(
 
 
 MAX_NOTEBOOKLM_ASK_CHARS = 4000
+PLAYBOOK_STYLE_BRIEF = "Match the channel_playbook.md source in this notebook."
 
 
 def condensed_style_notes(full_notes: str = "", *, max_chars: int = 1200) -> str:
@@ -384,6 +385,13 @@ def condensed_style_notes(full_notes: str = "", *, max_chars: int = 1200) -> str
         "- 12-15 min; muted real clips + VO; subtle ambient bed\n"
         "- See channel playbook source for full competitor patterns"
     )[:max_chars]
+
+
+def notebooklm_style_brief(full_notes: str = "", *, playbook_in_notebook: bool = False) -> str:
+    """Inline style for NotebookLM prompts — skip bulk when playbook is a source."""
+    if playbook_in_notebook:
+        return PLAYBOOK_STYLE_BRIEF
+    return condensed_style_notes(full_notes)
 
 
 def _notebooklm_ask_retryable(exc: Exception) -> bool:
