@@ -15,7 +15,6 @@ import os
 import subprocess
 import sys
 import tempfile
-import time
 from pathlib import Path
 from typing import Any
 
@@ -23,7 +22,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import edge_tts
 
-from azure_tts import azure_configured, build_simple_ssml, build_ssml, quota_warning, synthesize_ssml
+from azure_tts import azure_configured, is_transient_error, quota_warning, synthesize_chunk
 from captions import (
     CHRISTOPHER,
     attach_punctuation_from_text,
@@ -91,41 +90,52 @@ async def synthesize_edge(
     raise last_err or RuntimeError("edge-tts failed")
 
 
-def synthesize_azure_scene(
+async def synthesize_azure_scene(
     chunks: list[dict[str, Any]],
     dest: Path,
     *,
     default_voice: str,
-    style_degree: float,
-    plain_text: str = "",
+    tmp_dir: Path,
+    scene_index: int,
+    require_azure: bool,
 ) -> None:
-    ssml = build_ssml(chunks, default_voice=default_voice, style_degree=style_degree)
-    if not ssml:
+    if not chunks:
         write_silent_mp3(dest, EMPTY_SCENE_SEC)
         return
 
+    if len(chunks) == 1:
+        await _synthesize_azure_chunk(chunks[0], dest, default_voice=default_voice, require_azure=require_azure)
+        return
+
+    part_files: list[Path] = []
+    for i, chunk in enumerate(chunks):
+        part = tmp_dir / f"scene_{scene_index}_chunk_{i}.mp3"
+        await _synthesize_azure_chunk(chunk, part, default_voice=default_voice, require_azure=require_azure)
+        part_files.append(part)
+    concat_audio(part_files, dest)
+
+
+async def _synthesize_azure_chunk(
+    chunk: dict[str, Any],
+    dest: Path,
+    *,
+    default_voice: str,
+    require_azure: bool,
+) -> None:
     last_err: Exception | None = None
     for attempt in range(MAX_TTS_RETRIES):
         try:
-            synthesize_ssml(ssml, dest)
+            await asyncio.to_thread(synthesize_chunk, chunk, dest, default_voice=default_voice)
             return
         except Exception as exc:
             last_err = exc
-            err = str(exc).lower()
-            if "400" in err and plain_text.strip():
-                try:
-                    simple = build_simple_ssml(plain_text, voice=default_voice)
-                    synthesize_ssml(simple, dest)
-                    print("  Azure simple SSML fallback succeeded", flush=True)
-                    return
-                except Exception as simple_exc:
-                    last_err = simple_exc
-            retryable = any(s in err for s in ("429", "timeout", "503", "502", "connect"))
-            if retryable and attempt + 1 < MAX_TTS_RETRIES:
+            if is_transient_error(exc) and attempt + 1 < MAX_TTS_RETRIES:
                 wait = 2.0 * (attempt + 1)
                 print(f"  Azure TTS retry {attempt + 2}/{MAX_TTS_RETRIES} in {wait:.0f}s...", flush=True)
-                time.sleep(wait)
+                await asyncio.sleep(wait)
                 continue
+            if require_azure:
+                raise
             raise
     raise last_err or RuntimeError("Azure TTS failed")
 
@@ -185,6 +195,8 @@ async def run_phase(
     voices: list[str],
     rate: str,
     pipeline: dict[str, Any],
+    *,
+    require_azure: bool = False,
 ) -> None:
     script = clean_script_for_tts((input_dir / "script.txt").read_text(encoding="utf-8"))
     scenes_meta = load_json(input_dir / "scenes.json")
@@ -206,9 +218,12 @@ async def run_phase(
 
     captions_cfg = pipeline.get("captions", {})
     want_word_timings = bool(captions_cfg.get("generate_word_timings", False))
-    style_degree = float(pipeline.get("tts_azure_style_degree", 0.92))
+    if pipeline.get("tts_azure_style_degree") is not None:
+        os.environ["TTS_AZURE_STYLE_DEGREE"] = str(pipeline["tts_azure_style_degree"])
     default_voice = resolve_voice(voices[0] if voices else CHRISTOPHER)
     use_azure = str(pipeline.get("tts_provider", "azure")).lower() == "azure" and azure_configured()
+    if require_azure and not use_azure:
+        raise RuntimeError("Azure TTS required but AZURE_SPEECH_KEY/AZURE_SPEECH_REGION not configured")
 
     end_cfg = pipeline.get("end_card", {})
     end_script = ""
@@ -223,7 +238,7 @@ async def run_phase(
     if warn:
         print(f"  WARNING: {warn}", flush=True)
     if use_azure:
-        print(f"  TTS provider: azure (edge-tts fallback) (~{char_est:,} chars)", flush=True)
+        print(f"  TTS provider: azure (~{char_est:,} chars)", flush=True)
     else:
         print(f"  TTS provider: edge-tts (Azure not configured) (~{char_est:,} chars)", flush=True)
 
@@ -235,6 +250,7 @@ async def run_phase(
     word_timings: list[dict] = []
     clock = 0.0
     tts_backend = "azure" if use_azure else "edge"
+    edge_fallbacks = 0
 
     with tempfile.TemporaryDirectory() as tmp:
         tmp_path = Path(tmp)
@@ -251,19 +267,23 @@ async def run_phase(
                 if use_azure:
                     chunks = plan_scene_chunks(text, scene_index=i, pipeline=pipeline)
                     try:
-                        synthesize_azure_scene(
+                        await synthesize_azure_scene(
                             chunks,
                             part,
                             default_voice=default_voice,
-                            style_degree=style_degree,
-                            plain_text=text,
+                            tmp_dir=tmp_path,
+                            scene_index=i,
+                            require_azure=require_azure,
                         )
                         scene_voice = chunks[0].get("voice", default_voice) if chunks else default_voice
                         scene_backend = "azure"
                     except Exception as exc:
+                        if require_azure:
+                            raise RuntimeError(f"Azure TTS failed scene {sid}: {exc}") from exc
                         print(f"  Azure failed scene {sid}: {exc} — edge-tts fallback", flush=True)
                         srt, words = await synthesize_edge(text, default_voice, rate, part)
                         scene_backend = "edge-fallback"
+                        edge_fallbacks += 1
                 else:
                     srt, words = await synthesize_edge(text, default_voice, rate, part)
                     scene_backend = tts_backend
@@ -340,18 +360,22 @@ async def run_phase(
         try:
             if azure_configured():
                 outro_chunk = plan_outro_chunk(end_script, pipeline)
-                synthesize_azure_scene(
+                await synthesize_azure_scene(
                     [outro_chunk],
                     end_path,
                     default_voice=end_voice,
-                    style_degree=style_degree,
-                    plain_text=end_script,
+                    tmp_dir=output_dir,
+                    scene_index=9999,
+                    require_azure=require_azure,
                 )
             else:
                 await synthesize_edge(end_script, end_voice, rate, end_path)
         except Exception as exc:
+            if require_azure:
+                raise RuntimeError(f"End card Azure TTS failed: {exc}") from exc
             print(f"  End card Azure failed: {exc} — edge-tts", flush=True)
             await synthesize_edge(end_script, end_voice, rate, end_path)
+            edge_fallbacks += 1
         save_json(
             output_dir / "end_card.json",
             {
@@ -366,8 +390,12 @@ async def run_phase(
     meta = load_json(input_dir / "metadata.json") if (input_dir / "metadata.json").exists() else {}
     meta["total_audio_sec"] = round(sum(d["duration_sec"] for d in durations), 3)
     meta["tts_voices"] = voices
-    meta["tts_provider"] = tts_backend
+    meta["tts_provider"] = "edge-fallback" if edge_fallbacks else tts_backend
     meta["tts_char_estimate"] = char_est
+    if edge_fallbacks:
+        meta["tts_edge_fallback_scenes"] = edge_fallbacks
+    if require_azure and edge_fallbacks:
+        raise RuntimeError(f"Azure TTS required but edge-tts was used for {edge_fallbacks} scene(s)")
     target = meta.get("duration_minutes", 0) * 60
     if target:
         meta["duration_drift_sec"] = round(meta["total_audio_sec"] - target, 1)
@@ -380,6 +408,11 @@ def main() -> None:
     parser.add_argument("--output", type=Path, default=Path("output"))
     parser.add_argument("--pipeline", type=Path, default=CONFIG / "pipeline.json")
     parser.add_argument("--rate", default=None)
+    parser.add_argument(
+        "--require-azure",
+        action="store_true",
+        help="Fail if Azure TTS cannot synthesize any scene (no edge-tts fallback)",
+    )
     args = parser.parse_args()
 
     pipeline = load_json(args.pipeline) if args.pipeline.exists() else {}
@@ -396,7 +429,16 @@ def main() -> None:
     want_word_timings = bool(captions_cfg.get("generate_word_timings", False))
 
     try:
-        asyncio.run(run_phase(args.input, args.output, voices, rate, pipeline))
+        asyncio.run(
+            run_phase(
+                args.input,
+                args.output,
+                voices,
+                rate,
+                pipeline,
+                require_azure=args.require_azure or bool(pipeline.get("tts_require_azure", False)),
+            )
+        )
     except Exception as exc:
         print(exc, file=sys.stderr)
         sys.exit(1)

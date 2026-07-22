@@ -262,6 +262,17 @@ async def run_render_async(
     runs_dir: Path,
     movies_dir: Path,
 ) -> None:
+    import asyncio
+
+    await asyncio.to_thread(_run_render_sync, run_id, runs_dir=runs_dir, movies_dir=movies_dir)
+
+
+def _run_render_sync(
+    run_id: str,
+    *,
+    runs_dir: Path,
+    movies_dir: Path,
+) -> None:
     run_path = runs_dir / run_id
     state_path = run_path / "state.json"
     inputs = run_path / "inputs"

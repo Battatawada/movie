@@ -24,6 +24,7 @@
   "clip_pad_end_sec": 0.3,
   "max_clip_source_sec": 8.0,
   "tts_provider": "azure",
+  "tts_require_azure": true,
   "tts_modulation": true,
   "tts_humanize": true,
   "tts_merge_chunks": true,

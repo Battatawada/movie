@@ -113,19 +113,29 @@ jobs:
       - name: Verify VPS reachable
         run: |
           python - <<'PY'
-          import os, sys
+          import os, sys, time
           import httpx
           base = os.environ.get("VPS_URL", "").rstrip("/")
           if not base:
               sys.exit("VPS_URL secret is empty")
-          try:
-              r = httpx.get(f"{base}/health", timeout=30.0)
-              r.raise_for_status()
-          except Exception as exc:
-              print(f"VPS health check failed for {base}/health: {exc}")
-              print("If SSH localhost works, run: sudo bash /opt/retro-movies/scripts/vps-open-firewall-port.sh 8766")
-              raise
-          print(r.json())
+          last_err = None
+          for attempt in range(5):
+              try:
+                  r = httpx.get(f"{base}/health", timeout=60.0)
+                  r.raise_for_status()
+                  print(r.json())
+                  break
+              except Exception as exc:
+                  last_err = exc
+                  if attempt + 1 < 5:
+                      wait = 15 * (attempt + 1)
+                      print(f"VPS health retry {attempt + 2}/5 in {wait}s: {exc}")
+                      time.sleep(wait)
+                      continue
+                  print(f"VPS health check failed for {base}/health: {exc}")
+                  print("Worker may be busy rendering — retries exhausted.")
+                  print("If SSH localhost works, run: sudo bash /opt/retro-movies/scripts/vps-open-firewall-port.sh 8766")
+                  raise
           PY
 
       - name: Verify NotebookLM auth
@@ -175,7 +185,7 @@ jobs:
         env:
           AZURE_SPEECH_KEY: ${{ secrets.AZURE_SPEECH_KEY }}
           AZURE_SPEECH_REGION: ${{ secrets.AZURE_SPEECH_REGION }}
-        run: python src/phase2_audio.py --input output --output output
+        run: python src/phase2_audio.py --input output --output output --require-azure
 
       - name: Trigger VPS clip render
         run: python src/trigger_vps.py --input output --run-id "${{ steps.meta.outputs.run_id }}"
