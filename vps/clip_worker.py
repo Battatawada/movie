@@ -168,7 +168,12 @@ async def upload_inputs(
         raise HTTPException(500, f"Upload failed: {exc}") from exc
     if saved < 3:
         raise HTTPException(400, f"Expected at least 3 input files, got {saved}")
-    return {"run_id": run_id, "status": "inputs_saved", "files": str(saved), "saved": saved_names}
+    return {
+        "run_id": run_id,
+        "status": "inputs_saved",
+        "files": str(saved),
+        "saved": ", ".join(saved_names),
+    }
 
 
 @app.post("/generate")
