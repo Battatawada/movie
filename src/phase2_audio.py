@@ -23,7 +23,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import edge_tts
 
-from azure_tts import azure_configured, build_ssml, quota_warning, synthesize_ssml
+from azure_tts import azure_configured, build_simple_ssml, build_ssml, quota_warning, synthesize_ssml
 from captions import (
     CHRISTOPHER,
     attach_punctuation_from_text,
@@ -97,6 +97,7 @@ def synthesize_azure_scene(
     *,
     default_voice: str,
     style_degree: float,
+    plain_text: str = "",
 ) -> None:
     ssml = build_ssml(chunks, default_voice=default_voice, style_degree=style_degree)
     if not ssml:
@@ -111,6 +112,14 @@ def synthesize_azure_scene(
         except Exception as exc:
             last_err = exc
             err = str(exc).lower()
+            if "400" in err and plain_text.strip():
+                try:
+                    simple = build_simple_ssml(plain_text, voice=default_voice)
+                    synthesize_ssml(simple, dest)
+                    print("  Azure simple SSML fallback succeeded", flush=True)
+                    return
+                except Exception as simple_exc:
+                    last_err = simple_exc
             retryable = any(s in err for s in ("429", "timeout", "503", "502", "connect"))
             if retryable and attempt + 1 < MAX_TTS_RETRIES:
                 wait = 2.0 * (attempt + 1)
@@ -226,7 +235,6 @@ async def run_phase(
     word_timings: list[dict] = []
     clock = 0.0
     tts_backend = "azure" if use_azure else "edge"
-    azure_failed_globally = False
 
     with tempfile.TemporaryDirectory() as tmp:
         tmp_path = Path(tmp)
@@ -240,19 +248,20 @@ async def run_phase(
             scene_backend = tts_backend
 
             if text.strip():
-                if use_azure and not azure_failed_globally:
+                if use_azure:
                     chunks = plan_scene_chunks(text, scene_index=i, pipeline=pipeline)
                     try:
                         synthesize_azure_scene(
-                            chunks, part, default_voice=default_voice, style_degree=style_degree,
+                            chunks,
+                            part,
+                            default_voice=default_voice,
+                            style_degree=style_degree,
+                            plain_text=text,
                         )
                         scene_voice = chunks[0].get("voice", default_voice) if chunks else default_voice
                         scene_backend = "azure"
                     except Exception as exc:
                         print(f"  Azure failed scene {sid}: {exc} — edge-tts fallback", flush=True)
-                        azure_failed_globally = True
-                        use_azure = False
-                        tts_backend = "edge-fallback"
                         srt, words = await synthesize_edge(text, default_voice, rate, part)
                         scene_backend = "edge-fallback"
                 else:
@@ -329,10 +338,14 @@ async def run_phase(
         end_voice = resolve_voice(end_cfg.get("voice", default_voice))
         end_path = output_dir / "end_card.mp3"
         try:
-            if azure_configured() and not azure_failed_globally:
+            if azure_configured():
                 outro_chunk = plan_outro_chunk(end_script, pipeline)
                 synthesize_azure_scene(
-                    [outro_chunk], end_path, default_voice=end_voice, style_degree=style_degree,
+                    [outro_chunk],
+                    end_path,
+                    default_voice=end_voice,
+                    style_degree=style_degree,
+                    plain_text=end_script,
                 )
             else:
                 await synthesize_edge(end_script, end_voice, rate, end_path)

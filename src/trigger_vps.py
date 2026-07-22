@@ -26,6 +26,13 @@ INPUT_FILES = (
     "pipeline.json",
 )
 
+_MIME_BY_SUFFIX = {
+    ".json": "application/json",
+    ".srt": "text/plain; charset=utf-8",
+    ".mp3": "audio/mpeg",
+    ".png": "image/png",
+}
+
 
 def main() -> None:
     parser = argparse.ArgumentParser()
@@ -58,9 +65,7 @@ def main() -> None:
                 continue
         if not path.exists():
             continue
-        mime = "application/json" if name.endswith(".json") else (
-            "text/plain" if name.endswith(".srt") else "audio/mpeg"
-        )
+        mime = _MIME_BY_SUFFIX.get(path.suffix.lower(), "application/octet-stream")
         files.append((name, (name, path.read_bytes(), mime)))
 
     required = {"metadata.json", "scene_clips.json", "scene_durations.json", "narration.mp3"}
@@ -76,7 +81,12 @@ def main() -> None:
             files=files,
         )
         if resp.status_code >= 400:
-            sys.exit(f"Input upload failed: {resp.status_code} {resp.text}")
+            body = (resp.text or resp.reason_phrase or "no response body").strip()
+            total_bytes = sum(len(item[1][1]) for item in files)
+            sys.exit(
+                f"Input upload failed: {resp.status_code} {body} "
+                f"(files={len(files)}, bytes={total_bytes})"
+            )
 
         data = httpx_post_json_with_retry(
             f"{base}/generate",

@@ -14,8 +14,13 @@ on:
         required: false
         type: boolean
         default: false
+      skip_phase2:
+        description: "Skip Phase 1+2; restore narration from a prior run's failed-output artifact"
+        required: false
+        type: boolean
+        default: false
       source_run_id:
-        description: "GitHub Actions run ID with phase1-output artifact (required when skip_phase1 is true)"
+        description: "GitHub Actions run ID with phase1-output or failed-output artifact"
         required: false
         type: string
 
@@ -65,8 +70,17 @@ jobs:
       - name: Install ffmpeg (ffmpeg + ffprobe for Phase 2 audio)
         run: sudo apt-get update && sudo apt-get install -y ffmpeg
 
+      - name: Restore failed-output from prior run
+        if: ${{ github.event.inputs.skip_phase2 == 'true' }}
+        uses: actions/download-artifact@v4
+        with:
+          name: failed-output
+          path: output
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          run-id: ${{ github.event.inputs.source_run_id }}
+
       - name: Restore phase1-output from prior run
-        if: ${{ github.event.inputs.skip_phase1 == 'true' }}
+        if: ${{ github.event.inputs.skip_phase1 == 'true' && github.event.inputs.skip_phase2 != 'true' }}
         uses: actions/download-artifact@v4
         with:
           name: phase1-output
@@ -74,8 +88,19 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           run-id: ${{ github.event.inputs.source_run_id }}
 
+      - name: Validate failed-output restore
+        if: ${{ github.event.inputs.skip_phase2 == 'true' }}
+        run: |
+          required=(
+            output/script.txt output/scene_clips.json output/metadata.json
+            output/narration.mp3 output/scene_durations.json output/captions.srt
+          )
+          for f in "${required[@]}"; do
+            test -s "$f" || { echo "Missing from failed-output: $f"; exit 1; }
+          done
+
       - name: Validate phase1-output restore
-        if: ${{ github.event.inputs.skip_phase1 == 'true' }}
+        if: ${{ github.event.inputs.skip_phase1 == 'true' && github.event.inputs.skip_phase2 != 'true' }}
         run: |
           required=(
             output/script.txt output/scene_clips.json output/metadata.json
@@ -104,7 +129,7 @@ jobs:
           PY
 
       - name: Verify NotebookLM auth
-        if: ${{ github.event.inputs.skip_phase1 != 'true' }}
+        if: ${{ github.event.inputs.skip_phase1 != 'true' && github.event.inputs.skip_phase2 != 'true' }}
         env:
           NOTEBOOKLM_AUTH_JSON: ${{ secrets.NOTEBOOKLM_AUTH_JSON }}
           NOTEBOOKLM_PROFILE: retro
@@ -116,7 +141,7 @@ jobs:
           notebooklm auth check --test --json
 
       - name: Phase 1 — script + scene map
-        if: ${{ github.event.inputs.skip_phase1 != 'true' }}
+        if: ${{ github.event.inputs.skip_phase1 != 'true' && github.event.inputs.skip_phase2 != 'true' }}
         env:
           NOTEBOOKLM_AUTH_JSON: ${{ secrets.NOTEBOOKLM_AUTH_JSON }}
           NOTEBOOKLM_PROFILE: retro
@@ -128,6 +153,7 @@ jobs:
           python src/phase1_script.py "${ARGS[@]}"
 
       - name: Build thumbnail (Wikimedia + overlay)
+        if: ${{ github.event.inputs.skip_phase2 != 'true' }}
         run: python src/build_thumbnail.py --input output
         continue-on-error: true
 
@@ -138,12 +164,14 @@ jobs:
           echo "run_id=$RUN_ID" >> "$GITHUB_OUTPUT"
 
       - uses: actions/upload-artifact@v4
+        if: ${{ github.event.inputs.skip_phase2 != 'true' }}
         with:
           name: phase1-output
           path: output/
           if-no-files-found: error
 
       - name: Phase 2 — Azure TTS (+ edge fallback)
+        if: ${{ github.event.inputs.skip_phase2 != 'true' }}
         env:
           AZURE_SPEECH_KEY: ${{ secrets.AZURE_SPEECH_KEY }}
           AZURE_SPEECH_REGION: ${{ secrets.AZURE_SPEECH_REGION }}

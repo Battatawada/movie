@@ -24,6 +24,8 @@ WEBHOOK_SECRET = os.environ.get("WEBHOOK_SECRET", "")
 
 _jobs: dict[str, asyncio.Task] = {}
 
+RUNS_DIR.mkdir(parents=True, exist_ok=True)
+
 _SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]*[a-z0-9]$|^[a-z0-9]$")
 _RUN_ID_RE = re.compile(r"^[0-9]{8}-[0-9]{6}$")
 
@@ -74,8 +76,15 @@ async def _run_job(run_id: str) -> None:
 
 
 @app.get("/health")
-def health() -> dict[str, str]:
-    return {"status": "ok", "service": "retro-clip-worker", "movies_dir": str(MOVIES_DIR)}
+def health() -> dict[str, Any]:
+    free_bytes = shutil.disk_usage(RUNS_DIR).free
+    return {
+        "status": "ok",
+        "service": "retro-clip-worker",
+        "movies_dir": str(MOVIES_DIR),
+        "runs_dir": str(RUNS_DIR),
+        "runs_free_bytes": free_bytes,
+    }
 
 
 @app.get("/movies")
@@ -134,20 +143,32 @@ async def upload_inputs(
     """Multipart upload of pipeline artifacts (narration.mp3, scene_clips.json, etc.)."""
     if ".." in run_id:
         raise HTTPException(400, "Invalid run_id")
+    free_bytes = shutil.disk_usage(RUNS_DIR).free
+    if free_bytes < 256 * 1024 * 1024:
+        raise HTTPException(
+            507,
+            f"Insufficient disk space in RUNS_DIR ({free_bytes // (1024 * 1024)} MB free)",
+        )
     inputs_dir = RUNS_DIR / run_id / "inputs"
-    inputs_dir.mkdir(parents=True, exist_ok=True)
-
-    form = await request.form()
-    saved = 0
-    for key, value in form.items():
-        if hasattr(value, "read"):
-            dest = inputs_dir / str(key)
-            data = await value.read()
-            dest.write_bytes(data)
-            saved += 1
+    try:
+        inputs_dir.mkdir(parents=True, exist_ok=True)
+        form = await request.form()
+        saved = 0
+        saved_names: list[str] = []
+        for key, value in form.items():
+            if hasattr(value, "read"):
+                dest = inputs_dir / str(key)
+                data = await value.read()
+                dest.write_bytes(data)
+                saved += 1
+                saved_names.append(f"{key}({len(data)}B)")
+    except OSError as exc:
+        raise HTTPException(507, f"Failed to write inputs: {exc}") from exc
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(500, f"Upload failed: {exc}") from exc
     if saved < 3:
         raise HTTPException(400, f"Expected at least 3 input files, got {saved}")
-    return {"run_id": run_id, "status": "inputs_saved", "files": str(saved)}
+    return {"run_id": run_id, "status": "inputs_saved", "files": str(saved), "saved": saved_names}
 
 
 @app.post("/generate")

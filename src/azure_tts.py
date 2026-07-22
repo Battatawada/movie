@@ -47,6 +47,31 @@ def voice_supports_express_as(voice: str) -> bool:
     return voice in EXPRESS_AS_VOICES
 
 
+def _format_prosody_attr(value: str) -> str:
+    """Azure REST API expects signed relative values like +2.00%."""
+    raw = str(value).strip()
+    if not raw or raw == "0%":
+        return "0.00%"
+    m = re.match(r"([+-]?\d+(?:\.\d+)?)%", raw)
+    if not m:
+        return raw
+    num = float(m.group(1))
+    return f"{num:+.2f}%"
+
+
+def build_simple_ssml(text: str, *, voice: str) -> str:
+    """Minimal SSML for Azure fallback when rich prosody SSML is rejected."""
+    inner = _xml_escape(text.strip())
+    if not inner:
+        return ""
+    return (
+        '<speak version="1.0" xmlns="http://www.w3.org/2001/10/synthesis" '
+        'xmlns:mstts="https://www.w3.org/2001/mstts" xml:lang="en-US">'
+        f'<voice name="{voice}"><mstts:express-as style="newscast-casual">'
+        f"<prosody>{inner}</prosody></mstts:express-as></voice></speak>"
+    )
+
+
 def build_ssml(
     chunks: list[dict[str, Any]],
     *,
@@ -59,12 +84,14 @@ def build_ssml(
         text = str(chunk.get("text", "")).strip()
         if not text:
             continue
+        pause_ms = int(chunk.get("pause_ms", 0))
+        if pause_ms > 0:
+            parts.append(f'<break time="{pause_ms}ms"/>')
         voice = str(chunk.get("voice") or default_voice)
         role = str(chunk.get("role", "narration"))
-        rate = str(chunk.get("rate", "0%"))
-        pitch = str(chunk.get("pitch", "0%"))
-        volume = str(chunk.get("volume", "0%"))
-        pause_ms = int(chunk.get("pause_ms", 0))
+        rate = _format_prosody_attr(str(chunk.get("rate", "0%")))
+        pitch = _format_prosody_attr(str(chunk.get("pitch", "0%")))
+        volume = _format_prosody_attr(str(chunk.get("volume", "0%")))
         style = STYLE_MAP.get(role, "newscast-casual")
         inner = _xml_escape(text)
         prosody = f'<prosody rate="{rate}" pitch="{pitch}" volume="{volume}">{inner}</prosody>'
@@ -76,8 +103,6 @@ def build_ssml(
         else:
             body = prosody
         parts.append(f'<voice name="{voice}">{body}</voice>')
-        if pause_ms > 0:
-            parts.append(f'<break time="{pause_ms}ms"/>')
     if not parts:
         return ""
     return (
@@ -116,7 +141,7 @@ def synthesize_ssml(
     if resp.status_code == 429:
         raise RuntimeError("Azure TTS quota/rate limit exceeded (429)")
     if resp.status_code >= 400:
-        detail = resp.text[:500]
+        detail = (resp.text or resp.reason_phrase or "no response body").strip()[:500]
         raise RuntimeError(f"Azure TTS failed ({resp.status_code}): {detail}")
     if not resp.content:
         raise RuntimeError("Azure TTS returned empty audio")
