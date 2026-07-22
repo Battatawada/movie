@@ -19,6 +19,7 @@
   "pre_chat_delay_sec": 15,
   "scene_map_segment_chars": 80,
   "scene_map_index_blocks": 40,
+  "scene_map_batch_size": 12,
   "clip_pad_start_sec": 0.0,
   "clip_pad_end_sec": 0.3,
   "max_clip_source_sec": 8.0,

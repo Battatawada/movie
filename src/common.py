@@ -368,7 +368,7 @@ def notebooklm_source_add(
         raise
 
 
-MAX_NOTEBOOKLM_ASK_CHARS = 5500
+MAX_NOTEBOOKLM_ASK_CHARS = 4000
 
 
 def condensed_style_notes(full_notes: str = "", *, max_chars: int = 1200) -> str:

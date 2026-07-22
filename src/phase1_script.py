@@ -235,37 +235,126 @@ def build_scene_mapping_prompt(
     segments: list[str],
     blocks: list[SubtitleBlock],
     pipeline: dict[str, Any],
+    *,
+    scene_id_start: int = 1,
+    subtitle_hint: str = "",
+    index_start_line: int = 1,
 ) -> str:
     seg_chars = int(pipeline.get("scene_map_segment_chars", 80))
     index_blocks = int(pipeline.get("scene_map_index_blocks", 40))
-    scene_lines = "\n".join(
-        f"Scene {i + 1}: {seg[:seg_chars]}{'...' if len(seg) > seg_chars else ''}"
-        for i, seg in enumerate(segments)
-    )
-    prompt = (
-        load_prompt("scene_mapping.txt")
-        .replace("{scene_count}", str(len(segments)))
-        .replace("{narration_scenes}", scene_lines)
-        .replace("{subtitle_index_sample}", srt_to_llm_index(blocks[:index_blocks]))
-        .replace("{max_clip_sec}", str(pipeline.get("max_clip_source_sec", 8.0)))
-    )
-    from common import MAX_NOTEBOOKLM_ASK_CHARS
+    scene_id_end = scene_id_start + len(segments) - 1
+    start_idx = max(0, index_start_line - 1)
+    sample_blocks = blocks[start_idx : start_idx + index_blocks]
 
-    while len(prompt) > MAX_NOTEBOOKLM_ASK_CHARS and seg_chars > 30:
-        seg_chars -= 10
-        index_blocks = max(20, index_blocks - 5)
+    def _render(seg_len: int, sample_count: int) -> str:
         scene_lines = "\n".join(
-            f"Scene {i + 1}: {seg[:seg_chars]}{'...' if len(seg) > seg_chars else ''}"
+            f"Scene {scene_id_start + i}: {seg[:seg_len]}{'...' if len(seg) > seg_len else ''}"
             for i, seg in enumerate(segments)
         )
-        prompt = (
+        return (
             load_prompt("scene_mapping.txt")
             .replace("{scene_count}", str(len(segments)))
+            .replace("{scene_id_start}", str(scene_id_start))
+            .replace("{scene_id_end}", str(scene_id_end))
             .replace("{narration_scenes}", scene_lines)
-            .replace("{subtitle_index_sample}", srt_to_llm_index(blocks[:index_blocks]))
+            .replace("{subtitle_hint}", subtitle_hint)
+            .replace(
+                "{subtitle_index_sample}",
+                srt_to_llm_index(blocks[start_idx : start_idx + sample_count]),
+            )
             .replace("{max_clip_sec}", str(pipeline.get("max_clip_source_sec", 8.0)))
         )
+
+    prompt = _render(seg_chars, index_blocks)
+    from common import MAX_NOTEBOOKLM_ASK_CHARS
+
+    while len(prompt) > MAX_NOTEBOOKLM_ASK_CHARS and (seg_chars > 20 or index_blocks > 10):
+        if seg_chars > 20:
+            seg_chars -= 10
+        if index_blocks > 10:
+            index_blocks = max(10, index_blocks - 5)
+        prompt = _render(seg_chars, index_blocks)
     return prompt
+
+
+def collect_scene_mapping(
+    notebook_id: str,
+    segments: list[str],
+    blocks: list[SubtitleBlock],
+    pipeline: dict[str, Any],
+    *,
+    source_ids: list[str] | None = None,
+) -> tuple[list[dict[str, Any]], str]:
+    """Map narration scenes to subtitle line ranges, batching to stay under NotebookLM limits."""
+    batch_size = max(1, int(pipeline.get("scene_map_batch_size", 12)))
+    all_mapping: list[dict[str, Any]] = []
+    raw_parts: list[str] = []
+    last_end_line = 0
+    scene_id_start = 1
+    total_batches = (len(segments) + batch_size - 1) // batch_size
+
+    for batch_start in range(0, len(segments), batch_size):
+        batch_segments = segments[batch_start : batch_start + batch_size]
+        batch_num = batch_start // batch_size + 1
+        scene_id_end = scene_id_start + len(batch_segments) - 1
+
+        hint = ""
+        index_start_line = 1
+        if last_end_line > 0:
+            hint = (
+                f"\nPrevious scenes already mapped through subtitle line {last_end_line}. "
+                f"Pick ranges AFTER line {last_end_line}.\n"
+            )
+            index_start_line = max(1, last_end_line - 3)
+
+        if total_batches > 1:
+            print(
+                f"  Scene map batch {batch_num}/{total_batches} "
+                f"(scenes {scene_id_start}-{scene_id_end})...",
+                flush=True,
+            )
+
+        map_prompt = build_scene_mapping_prompt(
+            batch_segments,
+            blocks,
+            pipeline,
+            scene_id_start=scene_id_start,
+            subtitle_hint=hint,
+            index_start_line=index_start_line,
+        )
+        map_raw = ask(
+            notebook_id,
+            map_prompt,
+            new=True,
+            request_timeout=300,
+            source_ids=source_ids,
+        )
+        raw_parts.append(map_raw)
+        try:
+            batch_mapping = parse_scene_mapping(map_raw, len(batch_segments))
+        except ValueError:
+            print("  Retrying scene map batch with stricter JSON prompt...", flush=True)
+            retry = map_prompt + "\n\nReply with ONLY raw JSON. No markdown."
+            map_raw = ask(
+                notebook_id,
+                retry,
+                new=True,
+                request_timeout=300,
+                source_ids=source_ids,
+            )
+            raw_parts[-1] = map_raw
+            batch_mapping = parse_scene_mapping(map_raw, len(batch_segments))
+
+        for i, row in enumerate(batch_mapping):
+            normalized = dict(row)
+            normalized["scene_id"] = scene_id_start + i
+            all_mapping.append(normalized)
+
+        if batch_mapping:
+            last_end_line = max(int(r.get("subtitle_end", 0)) for r in batch_mapping)
+        scene_id_start += len(batch_segments)
+
+    return all_mapping, "\n\n---\n\n".join(raw_parts)
 
 
 def parse_scene_mapping(raw: str, scene_count: int) -> list[dict[str, Any]]:
@@ -608,28 +697,14 @@ def main() -> None:
         print(f"  -> {scene_count} narration scenes", flush=True)
 
         print("[Scene map] Subtitle line ranges...", flush=True)
-        map_prompt = build_scene_mapping_prompt(segments, blocks, pipeline)
-        map_raw = ask(
+        mapping, map_raw = collect_scene_mapping(
             notebook_id,
-            map_prompt,
-            new=True,
-            request_timeout=300,
+            segments,
+            blocks,
+            pipeline,
             source_ids=chat_source_ids,
         )
         (out / "scene_mapping_raw.txt").write_text(map_raw, encoding="utf-8")
-        try:
-            mapping = parse_scene_mapping(map_raw, scene_count)
-        except ValueError:
-            print("  Retrying scene map with stricter JSON prompt...", flush=True)
-            retry = map_prompt + "\n\nReply with ONLY raw JSON. No markdown."
-            map_raw = ask(
-                notebook_id,
-                retry,
-                new=True,
-                request_timeout=300,
-                source_ids=chat_source_ids,
-            )
-            mapping = parse_scene_mapping(map_raw, scene_count)
 
         scene_clips = resolve_scene_clips(mapping, segments, blocks, pipeline)
         print(f"  -> {len(scene_clips)} clips resolved from SRT", flush=True)

@@ -65,7 +65,7 @@ def build_ssml(
         pitch = str(chunk.get("pitch", "0%"))
         volume = str(chunk.get("volume", "0%"))
         pause_ms = int(chunk.get("pause_ms", 0))
-        style = STYLE_MAP.get(role, "documentary-narration")
+        style = STYLE_MAP.get(role, "newscast-casual")
         inner = _xml_escape(text)
         prosody = f'<prosody rate="{rate}" pitch="{pitch}" volume="{volume}">{inner}</prosody>'
         if voice_supports_express_as(voice):

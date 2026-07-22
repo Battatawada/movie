@@ -8,7 +8,7 @@ Use the subtitle index numbers (left column), not timestamps.
 
 Narration scenes:
 {narration_scenes}
-
+{subtitle_hint}
 Subtitle index (sample — full transcript is in the notebook):
 {subtitle_index_sample}
 
@@ -26,7 +26,7 @@ Reply with ONLY valid JSON (no markdown):
 }}
 
 Rules:
-- Exactly {scene_count} scenes, scene_id 1..{scene_count}
+- Exactly {scene_count} scenes, scene_id {scene_id_start}..{scene_id_end}
 - subtitle_start and subtitle_end are inclusive 1-based line numbers from the SRT index
 - Each range should cover 3–40 subtitle lines; prefer the visual beat, not the whole film
 - Ranges must not overlap heavily; move forward through the film

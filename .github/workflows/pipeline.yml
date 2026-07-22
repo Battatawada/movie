@@ -9,6 +9,15 @@ on:
         description: "Optional movie slug from config/movie_queue.json"
         required: false
         type: string
+      skip_phase1:
+        description: "Skip Phase 1; restore script from a prior run's phase1-output artifact"
+        required: false
+        type: boolean
+        default: false
+      source_run_id:
+        description: "GitHub Actions run ID with phase1-output artifact (required when skip_phase1 is true)"
+        required: false
+        type: string
 
 env:
   VPS_URL: ${{ secrets.VPS_WEBHOOK_URL }}
@@ -53,6 +62,29 @@ jobs:
       - name: Install dependencies
         run: pip install --pre -r requirements.txt
 
+      - name: Install ffmpeg (ffmpeg + ffprobe for Phase 2 audio)
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+
+      - name: Restore phase1-output from prior run
+        if: ${{ github.event.inputs.skip_phase1 == 'true' }}
+        uses: actions/download-artifact@v4
+        with:
+          name: phase1-output
+          path: output
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          run-id: ${{ github.event.inputs.source_run_id }}
+
+      - name: Validate phase1-output restore
+        if: ${{ github.event.inputs.skip_phase1 == 'true' }}
+        run: |
+          required=(
+            output/script.txt output/scene_clips.json output/metadata.json
+            output/scenes.json output/youtube_seo.json
+          )
+          for f in "${required[@]}"; do
+            test -s "$f" || { echo "Missing from phase1-output: $f"; exit 1; }
+          done
+
       - name: Verify VPS reachable
         run: |
           python - <<'PY'
@@ -72,6 +104,7 @@ jobs:
           PY
 
       - name: Verify NotebookLM auth
+        if: ${{ github.event.inputs.skip_phase1 != 'true' }}
         env:
           NOTEBOOKLM_AUTH_JSON: ${{ secrets.NOTEBOOKLM_AUTH_JSON }}
           NOTEBOOKLM_PROFILE: retro
@@ -83,6 +116,7 @@ jobs:
           notebooklm auth check --test --json
 
       - name: Phase 1 — script + scene map
+        if: ${{ github.event.inputs.skip_phase1 != 'true' }}
         env:
           NOTEBOOKLM_AUTH_JSON: ${{ secrets.NOTEBOOKLM_AUTH_JSON }}
           NOTEBOOKLM_PROFILE: retro
@@ -102,6 +136,12 @@ jobs:
         run: |
           RUN_ID=$(python -c "import json; print(json.load(open('output/metadata.json'))['run_id'])")
           echo "run_id=$RUN_ID" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: phase1-output
+          path: output/
+          if-no-files-found: error
 
       - name: Phase 2 — Azure TTS (+ edge fallback)
         env:
@@ -134,6 +174,14 @@ jobs:
           name: topic-history
           path: config/topic_history.json
           if-no-files-found: warn
+
+      - name: Upload partial output on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: failed-output
+          path: output/
+          if-no-files-found: ignore
 
       - name: Persist topic history to main
         if: success()
