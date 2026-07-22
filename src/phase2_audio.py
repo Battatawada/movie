@@ -32,7 +32,12 @@ from captions import (
 )
 from common import CONFIG, clean_script_for_tts, load_json, save_json, split_script_for_scenes
 from music_cues import plan_music_cue, smooth_scene_volumes
-from tts_narration import plan_outro_chunk, plan_scene_chunks, total_character_estimate
+from tts_narration import (
+    merge_scene_chunks_for_azure,
+    plan_outro_chunk,
+    plan_scene_chunks,
+    total_character_estimate,
+)
 
 DEFAULT_VOICES = [CHRISTOPHER]
 MAX_TTS_RETRIES = 4
@@ -266,6 +271,8 @@ async def run_phase(
             if text.strip():
                 if use_azure:
                     chunks = plan_scene_chunks(text, scene_index=i, pipeline=pipeline)
+                    if pipeline.get("tts_merge_chunks", True) and len(chunks) > 1:
+                        chunks = merge_scene_chunks_for_azure(chunks, scene_index=i)
                     try:
                         await synthesize_azure_scene(
                             chunks,

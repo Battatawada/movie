@@ -206,6 +206,55 @@ def plan_scene_chunks(
     return chunks
 
 
+def merge_scene_chunks_for_azure(
+    chunks: list[dict[str, Any]],
+    *,
+    scene_index: int = 0,
+) -> list[dict[str, Any]]:
+    """
+    Collapse adjacent narrator lines into one Azure request (True Crime pattern).
+    Keeps the opening hook beat on scene 0; never merges quotes / dialogue.
+    """
+    if len(chunks) <= 1:
+        return chunks
+
+    quote_roles = frozenset({"quote", "quote_male", "quote_female", "authority", "witness"})
+
+    def _merge_run(run: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        if not run:
+            return []
+        out: list[dict[str, Any]] = []
+        buf: dict[str, Any] | None = None
+        for ch in run:
+            if ch.get("role") in quote_roles:
+                if buf:
+                    out.append(buf)
+                    buf = None
+                out.append(ch)
+                continue
+            if (
+                buf
+                and buf.get("voice") == ch.get("voice")
+                and buf.get("role") == ch.get("role")
+            ):
+                buf = {
+                    **buf,
+                    "text": f"{buf['text']} {ch['text']}",
+                    "pause_ms": int(buf.get("pause_ms", 0)),
+                }
+            else:
+                if buf:
+                    out.append(buf)
+                buf = dict(ch)
+        if buf:
+            out.append(buf)
+        return out
+
+    if scene_index == 0 and chunks[0].get("role") in ("narration", "twist"):
+        return [chunks[0]] + _merge_run(chunks[1:])
+    return _merge_run(chunks)
+
+
 def plan_outro_chunk(script: str, pipeline: dict[str, Any]) -> dict[str, Any]:
     pool = _default_voice_pool(pipeline)
     return {
