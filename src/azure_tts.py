@@ -63,7 +63,7 @@ def _escape_ssml(text: str) -> str:
     return xml.sax.saxutils.escape(text)
 
 
-def build_ssml(chunk: dict[str, Any], *, default_voice: str) -> str:
+def build_ssml(chunk: dict[str, Any], *, default_voice: str, simple: bool = False) -> str:
     """Build one Azure SSML document for a single prosody/voice chunk."""
     voice = str(chunk.get("voice") or default_voice)
     role = str(chunk.get("role", "narration"))
@@ -82,16 +82,19 @@ def build_ssml(chunk: dict[str, Any], *, default_voice: str) -> str:
     if pause_ms > 0:
         body = f'<break time="{pause_ms}ms"/>{body}'
 
-    inner = (
-        f'<prosody rate="{rate}" pitch="{pitch}" volume="{volume}">'
-        f"<s>{body}</s></prosody>"
-    )
-    style = _role_style(voice, role)
-    if style:
+    if simple:
+        inner = f"<s>{body}</s>"
+    else:
         inner = (
-            f'<mstts:express-as style="{style}" styledegree="{_style_degree():.2f}">'
-            f"{inner}</mstts:express-as>"
+            f'<prosody rate="{rate}" pitch="{pitch}" volume="{volume}">'
+            f"<s>{body}</s></prosody>"
         )
+        style = _role_style(voice, role)
+        if style:
+            inner = (
+                f'<mstts:express-as style="{style}" styledegree="{_style_degree():.2f}">'
+                f"{inner}</mstts:express-as>"
+            )
 
     return (
         '<speak version="1.0" '
@@ -104,7 +107,10 @@ def build_ssml(chunk: dict[str, Any], *, default_voice: str) -> str:
 
 def is_transient_error(exc: BaseException) -> bool:
     msg = str(exc).lower()
-    return any(s in msg for s in ("timeout", "connect", "network", "503", "502", "429", "throttl"))
+    return any(
+        s in msg
+        for s in ("timeout", "connect", "network", "503", "502", "429", "throttl", "empty audio")
+    )
 
 
 def probe_duration(path: Path) -> float:
@@ -126,13 +132,8 @@ def probe_duration(path: Path) -> float:
     return max(0.5, float(result.stdout.strip()))
 
 
-def synthesize_chunk(chunk: dict[str, Any], dest: Path, *, default_voice: str) -> None:
-    """Synthesize one chunk to MP3 via Azure Speech SDK."""
+def _synthesize_ssml(ssml: str, dest: Path) -> None:
     import azure.cognitiveservices.speech as speechsdk
-
-    ssml = build_ssml(chunk, default_voice=default_voice)
-    if not ssml:
-        raise ValueError("Empty SSML")
 
     key = os.environ["AZURE_SPEECH_KEY"]
     region = os.environ["AZURE_SPEECH_REGION"]
@@ -154,6 +155,23 @@ def synthesize_chunk(chunk: dict[str, Any], dest: Path, *, default_voice: str) -
 
     dest.parent.mkdir(parents=True, exist_ok=True)
     dest.write_bytes(audio)
+
+
+def synthesize_chunk(chunk: dict[str, Any], dest: Path, *, default_voice: str) -> None:
+    """Synthesize one chunk to MP3 via Azure Speech SDK."""
+    ssml = build_ssml(chunk, default_voice=default_voice)
+    if not ssml:
+        raise ValueError("Empty SSML")
+
+    try:
+        _synthesize_ssml(ssml, dest)
+    except RuntimeError as exc:
+        if "empty audio" not in str(exc).lower():
+            raise
+        simple = build_ssml(chunk, default_voice=default_voice, simple=True)
+        if simple == ssml:
+            raise
+        _synthesize_ssml(simple, dest)
 
 
 def estimate_ssml_characters(chunks: list[dict[str, Any]]) -> int:

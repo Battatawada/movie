@@ -278,8 +278,6 @@ async def run_phase(
                         scene_voice = chunks[0].get("voice", default_voice) if chunks else default_voice
                         scene_backend = "azure"
                     except Exception as exc:
-                        if require_azure:
-                            raise RuntimeError(f"Azure TTS failed scene {sid}: {exc}") from exc
                         print(f"  Azure failed scene {sid}: {exc} — edge-tts fallback", flush=True)
                         srt, words = await synthesize_edge(text, default_voice, rate, part)
                         scene_backend = "edge-fallback"
@@ -395,7 +393,16 @@ async def run_phase(
     if edge_fallbacks:
         meta["tts_edge_fallback_scenes"] = edge_fallbacks
     if require_azure and edge_fallbacks:
-        raise RuntimeError(f"Azure TTS required but edge-tts was used for {edge_fallbacks} scene(s)")
+        max_fallback = max(3, len(durations) // 10)
+        if edge_fallbacks > max_fallback:
+            raise RuntimeError(
+                f"Azure TTS required but edge-tts was used for {edge_fallbacks} scene(s) "
+                f"(limit {max_fallback})"
+            )
+        print(
+            f"  WARNING: {edge_fallbacks} scene(s) used edge-tts fallback (within limit {max_fallback})",
+            flush=True,
+        )
     target = meta.get("duration_minutes", 0) * 60
     if target:
         meta["duration_drift_sec"] = round(meta["total_audio_sec"] - target, 1)

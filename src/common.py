@@ -96,7 +96,14 @@ def clean_script_for_tts(text: str) -> str:
             continue
         kept.append(stripped)
     merged = " ".join(kept)
-    merged = re.sub(r"\[\d+(?:,\s*\d+)*\]", "", merged)
+    merged = re.sub(r"\[\d+(?:\s*[-–]\s*\d+)?(?:,\s*\d+(?:\s*[-–]\s*\d+)?)*\]", "", merged)
+    merged = merged.replace("\\", "")
+    merged = merged.replace("`", "")
+    merged = re.sub(r'^["\'\s.]+\s*', "", merged)
+    merged = re.sub(r'\s*["\'`]+\s*\.', ".", merged)
+    merged = re.sub(r'\\+"', '"', merged)
+    merged = re.sub(r'\\+\'', "'", merged)
+    merged = re.sub(r'"{2,}', '"', merged)
     merged = re.sub(r"\s+", " ", merged)
     return normalize_tts_punctuation(merged)
 
