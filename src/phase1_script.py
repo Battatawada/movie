@@ -50,6 +50,7 @@ from common import (
     sanitize_seo_title,
     parse_total_parts,
     save_json,
+    validate_scene_clips,
     split_script_for_scenes,
     strip_markdown,
     strip_total_parts_header,
@@ -290,7 +291,6 @@ def collect_scene_mapping(
     batch_size = max(1, int(pipeline.get("scene_map_batch_size", 12)))
     all_mapping: list[dict[str, Any]] = []
     raw_parts: list[str] = []
-    last_end_line = 0
     scene_id_start = 1
     total_batches = (len(segments) + batch_size - 1) // batch_size
 
@@ -298,15 +298,6 @@ def collect_scene_mapping(
         batch_segments = segments[batch_start : batch_start + batch_size]
         batch_num = batch_start // batch_size + 1
         scene_id_end = scene_id_start + len(batch_segments) - 1
-
-        hint = ""
-        index_start_line = 1
-        if last_end_line > 0:
-            hint = (
-                f"\nPrevious scenes already mapped through subtitle line {last_end_line}. "
-                f"Pick ranges AFTER line {last_end_line}.\n"
-            )
-            index_start_line = max(1, last_end_line - 3)
 
         if total_batches > 1:
             print(
@@ -320,8 +311,6 @@ def collect_scene_mapping(
             blocks,
             pipeline,
             scene_id_start=scene_id_start,
-            subtitle_hint=hint,
-            index_start_line=index_start_line,
         )
         map_raw = ask(
             notebook_id,
@@ -351,8 +340,6 @@ def collect_scene_mapping(
             normalized["scene_id"] = scene_id_start + i
             all_mapping.append(normalized)
 
-        if batch_mapping:
-            last_end_line = max(int(r.get("subtitle_end", 0)) for r in batch_mapping)
         scene_id_start += len(batch_segments)
 
     return all_mapping, "\n\n---\n\n".join(raw_parts)
@@ -378,16 +365,11 @@ def resolve_scene_clips(
     pad_end = float(pipeline.get("clip_pad_end_sec", 0.3))
     max_dur = float(pipeline.get("max_clip_source_sec", 8.0))
     out: list[dict[str, Any]] = []
-    last_end_line = 0
 
     for i, row in enumerate(mapping):
         sid = int(row.get("scene_id", i + 1))
         start_line = int(row["subtitle_start"])
         end_line = int(row["subtitle_end"])
-        if start_line <= last_end_line:
-            start_line = last_end_line + 1
-        if end_line < start_line:
-            end_line = start_line + 2
         norm_start, norm_end = normalize_subtitle_range(blocks, start_line, end_line)
         if (norm_start, norm_end) != (start_line, end_line):
             print(
@@ -399,7 +381,6 @@ def resolve_scene_clips(
             blocks, start_line, end_line,
             pad_start=pad_start, pad_end=pad_end, max_duration=max_dur,
         )
-        last_end_line = end_line
         text = segments[i] if i < len(segments) else ""
         out.append({
             "scene_id": sid,
@@ -715,6 +696,7 @@ def main() -> None:
         (out / "scene_mapping_raw.txt").write_text(map_raw, encoding="utf-8")
 
         scene_clips = resolve_scene_clips(mapping, segments, blocks, pipeline)
+        validate_scene_clips(scene_clips)
         print(f"  -> {len(scene_clips)} clips resolved from SRT", flush=True)
 
         past_topics = format_topic_history_for_prompt(history)

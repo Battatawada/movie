@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 import os
 import re
 import shutil
+import signal
+import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -14,15 +16,14 @@ from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
 
-from phase3_render import run_render_async
-
 app = FastAPI(title="Retro Movie Archive Clip Worker", version="0.1.0")
 
 RUNS_DIR = Path(os.environ.get("RUNS_DIR", "./runs")).resolve()
 MOVIES_DIR = Path(os.environ.get("MOVIES_DIR", "/opt/movies")).resolve()
 WEBHOOK_SECRET = os.environ.get("WEBHOOK_SECRET", "")
+_VPS_ROOT = Path(__file__).resolve().parent
 
-_jobs: dict[str, asyncio.Task] = {}
+_jobs: dict[str, subprocess.Popen[bytes]] = {}
 
 RUNS_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -63,28 +64,38 @@ def _read_state(run_id: str) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-async def _run_job(run_id: str) -> None:
-    state_path = _state_path(run_id)
-    try:
-        await run_render_async(run_id, runs_dir=RUNS_DIR, movies_dir=MOVIES_DIR)
-    except Exception as exc:  # noqa: BLE001
-        state = _read_state(run_id) if state_path.exists() else {"run_id": run_id}
-        state["status"] = "failed"
-        state["error"] = str(exc)
-        state_path.parent.mkdir(parents=True, exist_ok=True)
-        state_path.write_text(json.dumps(state, indent=2), encoding="utf-8")
+def _prune_jobs() -> None:
+    finished = [run_id for run_id, proc in _jobs.items() if proc.poll() is not None]
+    for run_id in finished:
+        _jobs.pop(run_id, None)
+
+
+def _spawn_render(run_id: str) -> subprocess.Popen[bytes]:
+    return subprocess.Popen(
+        [sys.executable, "-m", "phase3_render", run_id],
+        cwd=_VPS_ROOT,
+        start_new_session=True,
+    )
+
+
+def _job_running(run_id: str) -> bool:
+    _prune_jobs()
+    proc = _jobs.get(run_id)
+    return proc is not None and proc.poll() is None
 
 
 @app.get("/health")
-def health() -> dict[str, Any]:
-    free_bytes = shutil.disk_usage(RUNS_DIR).free
-    return {
-        "status": "ok",
+async def health() -> dict[str, Any]:
+    _prune_jobs()
+    active_jobs = sum(1 for proc in _jobs.values() if proc.poll() is None)
+    payload: dict[str, Any] = {
+        "status": "busy" if active_jobs else "ok",
         "service": "retro-clip-worker",
-        "movies_dir": str(MOVIES_DIR),
-        "runs_dir": str(RUNS_DIR),
-        "runs_free_bytes": free_bytes,
+        "active_jobs": active_jobs,
     }
+    if active_jobs == 0:
+        payload["runs_free_bytes"] = shutil.disk_usage(RUNS_DIR).free
+    return payload
 
 
 @app.get("/movies")
@@ -183,7 +194,7 @@ async def generate(
 ) -> dict[str, str]:
     """Start render job after inputs are uploaded."""
     run_id = payload.run_id
-    if run_id in _jobs and not _jobs[run_id].done():
+    if _job_running(run_id):
         return {"run_id": run_id, "status": "already_running"}
 
     inputs_dir = RUNS_DIR / run_id / "inputs"
@@ -213,8 +224,7 @@ async def generate(
     state_path.parent.mkdir(parents=True, exist_ok=True)
     state_path.write_text(json.dumps(initial, indent=2), encoding="utf-8")
 
-    task = asyncio.create_task(_run_job(run_id))
-    _jobs[run_id] = task
+    _jobs[run_id] = _spawn_render(run_id)
     return {"run_id": run_id, "status": "accepted"}
 
 
@@ -246,9 +256,13 @@ def delete_run(run_id: str, _: None = Depends(verify_auth)) -> dict[str, Any]:
         return {"run_id": run_id, "status": "not_found"}
     if not run_dir.is_dir():
         raise HTTPException(400, "Not a run directory")
-    task = _jobs.pop(run_id, None)
-    if task and not task.done():
-        task.cancel()
+    proc = _jobs.pop(run_id, None)
+    if proc is not None and proc.poll() is None:
+        try:
+            os.killpg(proc.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            proc.terminate()
+        proc.wait(timeout=10)
     shutil.rmtree(run_dir)
     return {"run_id": run_id, "status": "deleted"}
 

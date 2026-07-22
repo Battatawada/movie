@@ -851,6 +851,32 @@ def next_series_type(history: list[dict[str, Any]] | None = None) -> str:
     return "serial_killer" if last == "incident" else "incident"
 
 
+def validate_scene_clips(scene_clips: list[dict[str, Any]], scene_durations: list[dict[str, Any]] | None = None) -> None:
+    """Fail fast when scene mapping would produce a broken recap render."""
+    if not scene_clips:
+        raise ValueError("scene_clips is empty")
+
+    starts = [(float(c.get("start", 0)), float(c.get("end", 0))) for c in scene_clips]
+    unique_starts = len({round(s, 1) for s, _ in starts})
+    if unique_starts < max(3, len(scene_clips) // 4):
+        raise ValueError(
+            f"Scene mapping looks collapsed: only {unique_starts} unique clip starts "
+            f"across {len(scene_clips)} scenes"
+        )
+
+    collapsed = sum(1 for s, e in starts if e - s < 1.0)
+    if collapsed > len(scene_clips) // 3:
+        raise ValueError(
+            f"Too many near-zero clip ranges ({collapsed}/{len(scene_clips)}) — "
+            "scene mapping likely invalid"
+        )
+
+    if scene_durations:
+        total_audio = sum(float(d.get("duration_sec", 0)) for d in scene_durations)
+        if total_audio < 300:
+            raise ValueError(f"Narration too short for recap ({total_audio:.1f}s)")
+
+
 def clips_to_scenes(scene_clips: list[dict[str, Any]]) -> list[dict]:
     """Minimal scenes.json compatible with phase2_audio."""
     return [

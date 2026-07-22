@@ -12,9 +12,12 @@ from typing import Any
 
 FPS = 30
 BG_COLOR = "0x000000"
+FFMPEG_THREADS = os.environ.get("FFMPEG_THREADS", "1")
 
 
 def _run(cmd: list[str]) -> None:
+    if cmd[:2] == ["ffmpeg", "-y"] and "-threads" not in cmd:
+        cmd = ["ffmpeg", "-y", "-threads", FFMPEG_THREADS, *cmd[2:]]
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0:
         raise RuntimeError(result.stderr or result.stdout or f"Command failed: {' '.join(cmd)}")
@@ -393,3 +396,31 @@ def _run_render_sync(
     state["clips_ready"] = total
     state["error"] = None
     _write_state(state_path, state)
+
+
+def main() -> None:
+    import sys
+
+    if len(sys.argv) != 2:
+        print("Usage: python -m phase3_render <run_id>", file=sys.stderr)
+        raise SystemExit(2)
+    run_id = sys.argv[1]
+    runs_dir = Path(os.environ.get("RUNS_DIR", "./runs")).resolve()
+    movies_dir = Path(os.environ.get("MOVIES_DIR", "/opt/movies")).resolve()
+    state_path = runs_dir / run_id / "state.json"
+    try:
+        _run_render_sync(run_id, runs_dir=runs_dir, movies_dir=movies_dir)
+    except Exception as exc:  # noqa: BLE001
+        if state_path.exists():
+            state = json.loads(state_path.read_text(encoding="utf-8"))
+        else:
+            state = {"run_id": run_id}
+        state["status"] = "failed"
+        state["error"] = str(exc)
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+        _write_state(state_path, state)
+        raise SystemExit(1) from exc
+
+
+if __name__ == "__main__":
+    main()

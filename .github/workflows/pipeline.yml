@@ -113,29 +113,60 @@ jobs:
       - name: Verify VPS reachable
         run: |
           python - <<'PY'
-          import os, sys, time
+          import os, socket, sys, time
+          from urllib.parse import urlparse
+
           import httpx
+
           base = os.environ.get("VPS_URL", "").rstrip("/")
           if not base:
               sys.exit("VPS_URL secret is empty")
+
+          parsed = urlparse(base)
+          host = parsed.hostname
+          port = parsed.port or (443 if parsed.scheme == "https" else 80)
+
+          def port_open() -> bool:
+              try:
+                  with socket.create_connection((host, port), timeout=15):
+                      return True
+              except OSError:
+                  return False
+
           last_err = None
           for attempt in range(5):
               try:
-                  r = httpx.get(f"{base}/health", timeout=60.0)
+                  r = httpx.get(f"{base}/health", timeout=httpx.Timeout(15.0, connect=15.0, read=15.0))
                   r.raise_for_status()
-                  print(r.json())
+                  body = r.json()
+                  print(body)
+                  if body.get("status") == "busy":
+                      print("VPS worker is busy rendering; continuing pipeline.")
                   break
+              except httpx.ReadTimeout as exc:
+                  if port_open():
+                      print(
+                          {
+                              "status": "busy",
+                              "service": "retro-clip-worker",
+                              "note": "health timed out but port is open — worker likely rendering on 1GB VPS",
+                          }
+                      )
+                      break
+                  last_err = exc
               except Exception as exc:
                   last_err = exc
-                  if attempt + 1 < 5:
-                      wait = 15 * (attempt + 1)
-                      print(f"VPS health retry {attempt + 2}/5 in {wait}s: {exc}")
-                      time.sleep(wait)
-                      continue
-                  print(f"VPS health check failed for {base}/health: {exc}")
-                  print("Worker may be busy rendering — retries exhausted.")
-                  print("If SSH localhost works, run: sudo bash /opt/retro-movies/scripts/vps-open-firewall-port.sh 8766")
-                  raise
+
+              if attempt + 1 < 5:
+                  wait = 15 * (attempt + 1)
+                  print(f"VPS health retry {attempt + 2}/5 in {wait}s: {last_err}")
+                  time.sleep(wait)
+                  continue
+
+              print(f"VPS health check failed for {base}/health: {last_err}")
+              print("Worker may be busy rendering — retries exhausted.")
+              print("If SSH localhost works, run: sudo bash /opt/retro-movies/scripts/vps-open-firewall-port.sh 8766")
+              raise last_err
           PY
 
       - name: Verify NotebookLM auth

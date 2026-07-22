@@ -10,7 +10,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from common import append_github_output, httpx_post_json_with_retry, load_json, new_run_id
+from common import append_github_output, httpx_post_json_with_retry, load_json, new_run_id, validate_scene_clips
 
 INPUT_FILES = (
     "metadata.json",
@@ -73,6 +73,10 @@ def main() -> None:
     missing = required - present
     if missing:
         sys.exit(f"Missing required inputs for VPS: {sorted(missing)}")
+
+    scene_clips = load_json(args.input / "scene_clips.json").get("scenes", [])
+    scene_durations = load_json(args.input / "scene_durations.json")
+    validate_scene_clips(scene_clips, scene_durations)
 
     with httpx.Client(timeout=300.0) as client:
         resp = client.post(
