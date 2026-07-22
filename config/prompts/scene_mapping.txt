@@ -28,6 +28,7 @@ Reply with ONLY valid JSON (no markdown):
 Rules:
 - Exactly {scene_count} scenes, scene_id {scene_id_start}..{scene_id_end}
 - subtitle_start and subtitle_end are inclusive 1-based line numbers from the SRT index
+- Valid subtitle lines are 1 through {max_subtitle_line} only — never exceed {max_subtitle_line}
 - Each range should cover 3–40 subtitle lines; prefer the visual beat, not the whole film
 - Ranges must not overlap heavily; move forward through the film
 - Clip source will be at most {max_clip_sec} seconds — pick tight visual moments

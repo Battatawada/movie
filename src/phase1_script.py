@@ -55,7 +55,7 @@ from common import (
     strip_total_parts_header,
     topic_overlaps_history,
 )
-from srt_parser import SubtitleBlock, load_srt, parse_srt, resolve_line_range, srt_to_llm_index
+from srt_parser import SubtitleBlock, load_srt, normalize_subtitle_range, parse_srt, resolve_line_range, srt_to_llm_index, subtitle_index_bounds
 
 
 def wait_sources(
@@ -244,7 +244,7 @@ def build_scene_mapping_prompt(
     index_blocks = int(pipeline.get("scene_map_index_blocks", 40))
     scene_id_end = scene_id_start + len(segments) - 1
     start_idx = max(0, index_start_line - 1)
-    sample_blocks = blocks[start_idx : start_idx + index_blocks]
+    _, max_subtitle_line = subtitle_index_bounds(blocks)
 
     def _render(seg_len: int, sample_count: int) -> str:
         scene_lines = "\n".join(
@@ -256,6 +256,7 @@ def build_scene_mapping_prompt(
             .replace("{scene_count}", str(len(segments)))
             .replace("{scene_id_start}", str(scene_id_start))
             .replace("{scene_id_end}", str(scene_id_end))
+            .replace("{max_subtitle_line}", str(max_subtitle_line))
             .replace("{narration_scenes}", scene_lines)
             .replace("{subtitle_hint}", subtitle_hint)
             .replace(
@@ -387,6 +388,13 @@ def resolve_scene_clips(
             start_line = last_end_line + 1
         if end_line < start_line:
             end_line = start_line + 2
+        norm_start, norm_end = normalize_subtitle_range(blocks, start_line, end_line)
+        if (norm_start, norm_end) != (start_line, end_line):
+            print(
+                f"  WARN scene {sid}: clamped subtitle {start_line}-{end_line} -> {norm_start}-{norm_end}",
+                flush=True,
+            )
+        start_line, end_line = norm_start, norm_end
         start_sec, end_sec = resolve_line_range(
             blocks, start_line, end_line,
             pad_start=pad_start, pad_end=pad_end, max_duration=max_dur,

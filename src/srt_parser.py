@@ -93,6 +93,44 @@ def srt_to_llm_index(blocks: list[SubtitleBlock], *, max_chars: int = 120_000) -
     return "\n".join(lines)
 
 
+def subtitle_index_bounds(blocks: list[SubtitleBlock]) -> tuple[int, int]:
+    if not blocks:
+        raise ValueError("No subtitle blocks")
+    indices = [b.index for b in blocks]
+    return min(indices), max(indices)
+
+
+def clamp_subtitle_line(blocks: list[SubtitleBlock], line: int) -> int:
+    """Snap a 1-based subtitle index to the nearest existing SRT index."""
+    by_index = {b.index: b for b in blocks}
+    if line in by_index:
+        return line
+    lo, hi = subtitle_index_bounds(blocks)
+    line = max(lo, min(hi, line))
+    if line in by_index:
+        return line
+    for candidate in range(line, hi + 1):
+        if candidate in by_index:
+            return candidate
+    for candidate in range(line, lo - 1, -1):
+        if candidate in by_index:
+            return candidate
+    raise ValueError("No subtitle blocks")
+
+
+def normalize_subtitle_range(
+    blocks: list[SubtitleBlock],
+    start_line: int,
+    end_line: int,
+) -> tuple[int, int]:
+    """Clamp LLM-picked subtitle indices to valid SRT line numbers."""
+    start_line = clamp_subtitle_line(blocks, start_line)
+    end_line = clamp_subtitle_line(blocks, end_line)
+    if end_line < start_line:
+        end_line = clamp_subtitle_line(blocks, start_line + 2)
+    return start_line, end_line
+
+
 def resolve_line_range(
     blocks: list[SubtitleBlock],
     start_line: int,
@@ -103,6 +141,7 @@ def resolve_line_range(
     max_duration: float = 12.0,
 ) -> tuple[float, float]:
     """Map 1-based inclusive subtitle line numbers to clip start/end seconds."""
+    start_line, end_line = normalize_subtitle_range(blocks, start_line, end_line)
     by_index = {b.index: b for b in blocks}
     if start_line not in by_index or end_line not in by_index:
         raise ValueError(f"Subtitle lines {start_line}-{end_line} not found in SRT")
