@@ -1,0 +1,128 @@
+# Re-render from a prior run's mid-pipeline artifact (no new script/TTS).
+name: Re-render only
+
+env:
+  VPS_URL: ${{ secrets.VPS_WEBHOOK_URL }}
+  VPS_SECRET: ${{ secrets.VPS_WEBHOOK_SECRET }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_run_id:
+        description: "GitHub Actions run ID with mid-pipeline artifact"
+        required: true
+        type: string
+      replace_video_id:
+        description: "Optional YouTube video ID to delete before re-upload"
+        required: false
+        type: string
+
+jobs:
+  re-render:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: mid-pipeline
+          path: output
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          run-id: ${{ inputs.source_run_id }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Install ffmpeg (ffprobe for validation)
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+
+      - run: pip install httpx
+
+      - name: Verify movie exists on VPS
+        run: |
+          python - <<'PY'
+          import json, os, sys
+          import httpx
+
+          slug = json.load(open("output/metadata.json"))["movie_slug"]
+          base = os.environ["VPS_URL"].rstrip("/")
+          headers = {"Authorization": f"Bearer {os.environ['VPS_SECRET']}"}
+          r = httpx.get(f"{base}/movies", headers=headers, timeout=60.0)
+          r.raise_for_status()
+          slugs = {m["slug"] for m in r.json().get("movies", [])}
+          if slug not in slugs:
+              sys.exit(
+                  f"Movie {slug!r} not on VPS. Upload it first with "
+                  f"scripts/upload-movie-to-vps.ps1"
+              )
+          print(f"movie on VPS: {slug}")
+          PY
+
+      - name: Trigger VPS clip render
+        run: |
+          RUN_ID=$(python -c "import json; print(json.load(open('output/metadata.json'))['run_id'])")
+          echo "run_id=$RUN_ID" >> "$GITHUB_OUTPUT"
+          python src/trigger_vps.py --input output --run-id "$RUN_ID"
+        id: meta
+
+      - name: Poll VPS until render complete
+        run: python src/poll_vps.py --run-id "${{ steps.meta.outputs.run_id }}" --timeout 10800
+
+      - name: Download final video from VPS
+        run: python src/download_vps_output.py --run-id "${{ steps.meta.outputs.run_id }}" --output output
+
+      - name: Validate render duration
+        run: python src/validate_render.py --input output
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: final-video
+          path: |
+            output/final_video.mp4
+            output/thumbnail.png
+            output/captions.srt
+            output/metadata.json
+            output/youtube_seo.json
+            output/script.txt
+          if-no-files-found: error
+
+      - run: pip install -r requirements.txt
+
+      - name: Delete prior YouTube upload
+        if: ${{ inputs.replace_video_id != '' }}
+        env:
+          YOUTUBE_CLIENT_ID: ${{ secrets.YOUTUBE_CLIENT_ID }}
+          YOUTUBE_CLIENT_SECRET: ${{ secrets.YOUTUBE_CLIENT_SECRET }}
+          YOUTUBE_REFRESH_TOKEN: ${{ secrets.YOUTUBE_REFRESH_TOKEN }}
+        run: python src/delete_youtube_video.py "${{ inputs.replace_video_id }}"
+
+      - name: Phase 5 — YouTube upload
+        env:
+          YOUTUBE_CLIENT_ID: ${{ secrets.YOUTUBE_CLIENT_ID }}
+          YOUTUBE_CLIENT_SECRET: ${{ secrets.YOUTUBE_CLIENT_SECRET }}
+          YOUTUBE_REFRESH_TOKEN: ${{ secrets.YOUTUBE_REFRESH_TOKEN }}
+        run: |
+          if [ -z "$YOUTUBE_CLIENT_ID" ] || [ -z "$YOUTUBE_REFRESH_TOKEN" ]; then
+            echo "YouTube secrets not set — video saved as artifact only."
+            exit 0
+          fi
+          test -s output/final_video.mp4 || exit 1
+          test -s output/thumbnail.png || exit 1
+          python src/phase5_upload.py \
+            --video output/final_video.mp4 \
+            --metadata output/metadata.json \
+            --seo output/youtube_seo.json \
+            --captions output/captions.srt \
+            --thumbnail output/thumbnail.png
+
+      - name: Cleanup VPS run artifacts
+        if: success()
+        run: python src/cleanup_vps.py --input output --skip-movie
+
+      - name: Alert on success
+        if: success()
+        env:
+          ALERT_WEBHOOK_URL: ${{ secrets.ALERT_WEBHOOK_URL }}
+        run: bash scripts/alert.sh "Re-render complete — run ${{ steps.meta.outputs.run_id }}"

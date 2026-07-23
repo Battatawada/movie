@@ -23,6 +23,33 @@ def _run(cmd: list[str]) -> None:
         raise RuntimeError(result.stderr or result.stdout or f"Command failed: {' '.join(cmd)}")
 
 
+def _expected_video_duration(
+    dur_by_id: dict[int, float],
+    *,
+    end_dur: float = 0.0,
+) -> float:
+    return sum(dur_by_id.values()) + max(0.0, end_dur)
+
+
+def _assert_duration(path: Path, expected: float, label: str, *, tolerance: float = 0.95) -> float:
+    actual = _probe_duration(path)
+    if expected > 0 and actual < expected * tolerance:
+        raise RuntimeError(
+            f"{label} duration {actual:.1f}s is much shorter than expected {expected:.1f}s"
+        )
+    return actual
+
+
+def _concat_video_segments(list_file: Path, dest: Path) -> None:
+    """Re-encode concat so MP4 segment timestamps cannot truncate the output."""
+    _run([
+        "ffmpeg", "-y",
+        "-f", "concat", "-safe", "0", "-i", str(list_file),
+        "-an", "-c:v", "libx264", "-pix_fmt", "yuv420p",
+        str(dest),
+    ])
+
+
 def _probe_duration(path: Path) -> float:
     result = subprocess.run(
         [
@@ -69,14 +96,19 @@ def extract_clip(
     start = _sec_to_ffmpeg(start_sec)
     end = _sec_to_ffmpeg(end_sec)
 
+    encode_args = [
+        "-an", "-vf", vf,
+        "-t", str(output_duration),
+        "-c:v", "libx264", "-pix_fmt", "yuv420p",
+        "-video_track_timescale", "30000",
+        str(dest),
+    ]
     if source_dur >= output_duration:
         _run([
             "ffmpeg", "-y",
             "-ss", start, "-to", end,
             "-i", str(movie),
-            "-an", "-vf", vf,
-            "-t", str(output_duration),
-            "-pix_fmt", "yuv420p", str(dest),
+            *encode_args,
         ])
         return
 
@@ -86,9 +118,7 @@ def extract_clip(
         "-ss", start, "-to", end,
         "-stream_loop", "-1",
         "-i", str(movie),
-        "-an", "-vf", vf,
-        "-t", str(output_duration),
-        "-pix_fmt", "yuv420p", str(dest),
+        *encode_args,
     ])
 
 
@@ -329,11 +359,17 @@ def _run_render_sync(
             f.write(f"file '{p.resolve().as_posix()}'\n")
 
     video_only = work / "video_only.mp4"
-    _run(["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", str(list_file), "-c", "copy", str(video_only)])
+    _concat_video_segments(list_file, video_only)
+    _assert_duration(
+        video_only,
+        _expected_video_duration(dur_by_id),
+        "clip concat",
+    )
 
     narration = inputs / "narration.mp3"
     end_audio = inputs / "end_card.mp3"
     audio_paths = [narration]
+    end_dur = 0.0
     if end_audio.exists():
         end_meta_path = inputs / "end_card.json"
         if end_meta_path.exists():
@@ -350,12 +386,14 @@ def _run_render_sync(
                     f.write(f"file '{video_only.resolve().as_posix()}'\n")
                     f.write(f"file '{end_clip.resolve().as_posix()}'\n")
                 combined = work / "video_with_end.mp4"
-                _run([
-                    "ffmpeg", "-y", "-f", "concat", "-safe", "0",
-                    "-i", str(work / "concat_end.txt"), "-c", "copy", str(combined),
-                ])
+                _concat_video_segments(work / "concat_end.txt", combined)
                 video_only = combined
                 audio_paths.append(end_audio)
+                _assert_duration(
+                    video_only,
+                    _expected_video_duration(dur_by_id, end_dur=end_dur),
+                    "video with end card",
+                )
 
     if len(audio_paths) == 1:
         voice_audio = narration
@@ -377,11 +415,14 @@ def _run_render_sync(
     _write_state(state_path, state)
 
     final = out_dir / "final_video.mp4"
+    expected_final = _probe_duration(voice_audio)
     _run([
         "ffmpeg", "-y", "-i", str(video_only), "-i", audio_in,
+        "-map", "0:v:0", "-map", "1:a:0",
         "-c:v", "libx264", "-c:a", "aac", "-pix_fmt", "yuv420p",
-        "-shortest", str(final),
+        str(final),
     ])
+    _assert_duration(final, expected_final, "final mux")
 
     thumb_path = out_dir / "thumbnail.png"
     uploaded_thumb = inputs / "thumbnail.png"

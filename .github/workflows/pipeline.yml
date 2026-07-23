@@ -289,6 +289,11 @@ jobs:
       - name: Download final video from VPS
         run: python src/download_vps_output.py --run-id "${{ needs.script-and-audio.outputs.run_id }}" --output output
 
+      - name: Validate render duration
+        run: |
+          pip install -q httpx
+          python src/validate_render.py --input output
+
       - uses: actions/upload-artifact@v4
         with:
           name: final-video
@@ -338,13 +343,14 @@ jobs:
             --captions output/captions.srt \
             --thumbnail output/thumbnail.png
 
-      - name: Cleanup VPS movie + run artifacts
+      - name: Cleanup VPS run artifacts
         if: success()
         run: |
           pip install httpx -q
           python src/cleanup_vps.py \
             --input output \
-            --run-id "${{ needs.script-and-audio.outputs.run_id }}"
+            --run-id "${{ needs.script-and-audio.outputs.run_id }}" \
+            --skip-movie
 
       - name: Alert on success
         if: success()

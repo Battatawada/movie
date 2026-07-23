@@ -63,7 +63,7 @@ jobs:
         if: success()
         run: |
           pip install httpx -q
-          python src/cleanup_vps.py --input output
+          python src/cleanup_vps.py --input output --skip-movie
 
       - name: Alert on success
         if: success()
