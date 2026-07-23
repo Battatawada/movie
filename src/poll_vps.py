@@ -15,6 +15,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from common import httpx_get_json_with_retry
 
 SETUP_PHASES = frozenset({"queued", "clips"})
+CLIP_STALL_SEC = 1800  # clip extraction should show steady progress
+POST_CLIP_STALL_SEC = 7200  # concat/mux may run long without clips_ready updates
 
 
 def main() -> None:
@@ -33,6 +35,7 @@ def main() -> None:
     deadline = time.time() + args.timeout
     last_ready = -1
     last_progress_at = time.time()
+    last_phase = ""
 
     while time.time() < deadline:
         try:
@@ -57,6 +60,11 @@ def main() -> None:
             flush=True,
         )
 
+        if phase != last_phase:
+            if phase not in SETUP_PHASES:
+                last_progress_at = time.time()
+            last_phase = phase
+
         if status == "complete":
             return
 
@@ -67,18 +75,24 @@ def main() -> None:
         if ready > last_ready:
             last_ready = ready
             last_progress_at = time.time()
-        elif status == "running" and ready > 0:
+        elif status == "running":
+            stall_limit = CLIP_STALL_SEC if phase in SETUP_PHASES else POST_CLIP_STALL_SEC
             stall_sec = time.time() - last_progress_at
-            if stall_sec > 1800:
+            if phase in SETUP_PHASES and ready > 0 and stall_sec > stall_limit:
                 sys.exit(
                     f"VPS job stalled at {ready}/{total} clips for {int(stall_sec // 60)}+ minutes"
+                )
+            if phase not in SETUP_PHASES and stall_sec > stall_limit:
+                sys.exit(
+                    f"VPS job stalled in {phase or 'post-clip'} phase for {int(stall_sec // 60)}+ minutes"
                 )
 
         updated_at = data.get("updated_at")
         if updated_at:
             try:
                 ts = datetime.fromisoformat(str(updated_at).replace("Z", "+00:00"))
-                if (datetime.now(timezone.utc) - ts).total_seconds() < 180:
+                fresh_sec = 180 if phase in SETUP_PHASES else 3600
+                if (datetime.now(timezone.utc) - ts).total_seconds() < fresh_sec:
                     last_progress_at = time.time()
             except ValueError:
                 pass
